@@ -18,7 +18,7 @@
       align-items: center;
       justify-content: center;
       overflow: hidden;
-      padding-bottom: 180px; /* keep the view clear of the fixed controls */
+      padding-bottom: 220px; /* keep the view clear of the fixed controls */
       box-sizing: border-box;
     }
 
@@ -48,7 +48,7 @@
     #controls {
       position: fixed;
       left: 50%;
-      bottom: 96px;
+      bottom: 88px;
       transform: translateX(-50%);
       display: flex;
       flex-direction: column;
@@ -73,14 +73,18 @@
     button:hover, button[aria-pressed="true"] { background: #fff; color: #000; }
     button:disabled { opacity: 0.4; cursor: default; background: #000; color: #fff; }
     button:focus-visible { outline: 1px solid #fff; outline-offset: 2px; }
+    button.icon { width: 44px; height: 38px; padding: 0; display: grid; place-items: center; }
+    button.icon svg {
+      width: 24px;
+      height: 24px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      stroke-linejoin: miter;
+    }
 
-    /* Slider pinned to the bottom so it never moves when the view resizes */
+    /* Sliders: square white thumb on a thin white track */
     input[type="range"] {
-      position: fixed;
-      left: 50%;
-      bottom: 48px;
-      transform: translateX(-50%);
-      width: min(320px, 80vw);
       margin: 0;
       height: 24px;
       background: transparent;
@@ -101,6 +105,22 @@
     }
     input[type="range"]::-moz-range-track { height: 2px; background: #fff; }
     input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; background: #fff; border: none; }
+
+    /* Camera size slider pinned to the bottom so it never moves when the view resizes */
+    #size {
+      position: fixed;
+      left: 50%;
+      bottom: 48px;
+      transform: translateX(-50%);
+      width: min(320px, 80vw);
+    }
+
+    /* Smaller shape size slider */
+    #shapeSize { width: 160px; height: 20px; }
+    #shapeSize::-webkit-slider-runnable-track { height: 1px; }
+    #shapeSize::-webkit-slider-thumb { width: 12px; height: 12px; margin-top: -5.5px; }
+    #shapeSize::-moz-range-track { height: 1px; }
+    #shapeSize::-moz-range-thumb { width: 12px; height: 12px; }
   </style>
 </head>
 <body>
@@ -117,12 +137,21 @@
       <button id="confirm" disabled>Confirm</button>
     </div>
     <div class="row" id="step2" hidden>
-      <button data-shape="square">Square</button>
-      <button data-shape="circle">Circle</button>
-      <button data-shape="ellipse">Ellipse</button>
-      <button data-shape="triangle">Triangle</button>
+      <button class="icon" data-shape="square" aria-label="Square" title="Square">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/></svg>
+      </button>
+      <button class="icon" data-shape="circle" aria-label="Circle" title="Circle">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/></svg>
+      </button>
+      <button class="icon" data-shape="ellipse" aria-label="Ellipse" title="Ellipse">
+        <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="5.5"/></svg>
+      </button>
+      <button class="icon" data-shape="triangle" aria-label="Triangle" title="Triangle">
+        <svg viewBox="0 0 24 24"><polygon points="12,3.5 21,19.5 3,19.5"/></svg>
+      </button>
       <button id="remark">Re-mark face</button>
     </div>
+    <input id="shapeSize" type="range" min="50" max="200" value="100" aria-label="Shape size" hidden>
   </div>
 
   <input id="size" type="range" min="5" max="100" value="40" aria-label="Camera size">
@@ -139,6 +168,7 @@
     const step2 = document.getElementById('step2');
     const markers = [...document.querySelectorAll('.marker')];
     const shapeBtns = [...document.querySelectorAll('[data-shape]')];
+    const shapeSize = document.getElementById('shapeSize');
 
     // MediaPipe face mesh indices
     const OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
@@ -157,8 +187,13 @@
     let faceSeen = false;
     const offsets = [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }]; // user corrections, face-local units
     const faceR = new Float32Array(N);
-    const ratio = new Float32Array(N).fill(1);
     let center = { x: 0, y: 0 };
+    let rot = 0, r0 = 0;                     // face roll and mean face radius
+
+    // Shapes are drawn exactly in the shader; 0 = no shape (face as-is)
+    const SHAPES = { square: 1, circle: 2, ellipse: 3, triangle: 4 };
+    let shapeFrom = 0, shapeTo = 0, shapeT = 1; // transition between shapes
+    let lastNow = 0;
 
     // ---------- geometry ----------
     const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
@@ -188,47 +223,33 @@
       return best;
     }
 
-    const regular = (n, r, start) => Array.from({ length: n }, (_, k) => {
-      const a = start + k * 2 * Math.PI / n;
-      return { x: r * Math.cos(a), y: r * Math.sin(a) };
-    });
-
-    // Radius of the chosen shape at face-local angle phi, sized from mean face radius r0
-    function shapeRadius(phi, r0) {
-      const c = Math.cos(phi), s = Math.sin(phi);
-      switch (shape) {
-        case 'circle': return r0;
-        case 'ellipse': { const a = 1.3 * r0, b = 0.72 * r0; return a * b / Math.hypot(b * c, a * s); }
-        case 'square': return 0.9 * r0 / Math.max(Math.abs(c), Math.abs(s));
-        case 'triangle': return rayPoly({ x: 0, y: 0 }, { x: c, y: s }, regular(3, 1.35 * r0, -Math.PI / 2));
-      }
-    }
-
     // User-corrected eye/mouth positions
     function corrected() {
       const f = frameOf(pts[0], pts[1]);
       return pts.map((p, i) => toWorld(p, offsets[i], f));
     }
 
-    function updateWarp() {
-      let r0 = 0, rot = 0;
+    function updateWarp(now) {
       if (faceSeen) {
         const c = corrected();
         center = { x: (c[0].x + c[1].x + c[2].x) / 3, y: (c[0].y + c[1].y + c[2].y) / 3 };
         const f = frameOf(c[0], c[1]);
         rot = Math.atan2(f.ex.y, f.ex.x);
+        r0 = 0;
         for (let i = 0; i < N; i++) {
           const a = -Math.PI + i * 2 * Math.PI / N;
           faceR[i] = rayPoly(center, { x: Math.cos(a), y: Math.sin(a) }, oval) || faceR[i];
           r0 += faceR[i] / N;
         }
       }
-      for (let i = 0; i < N; i++) {
-        const a = -Math.PI + i * 2 * Math.PI / N;
-        const target = (faceSeen && step === 2 && shape && faceR[i] > 0)
-          ? shapeRadius(a - rot, r0) / faceR[i] : 1;
-        ratio[i] += (target - ratio[i]) * 0.2; // ease between shapes
+      const target = faceSeen && step === 2 && shape ? SHAPES[shape] : 0;
+      if (target !== shapeTo) {
+        shapeFrom = shapeTo;
+        shapeTo = target;
+        shapeT = 0;
       }
+      shapeT = Math.min(1, shapeT + (now - lastNow) / 250);
+      lastNow = now;
     }
 
     // ---------- WebGL warp ----------
@@ -239,30 +260,55 @@
       precision highp float;
       uniform sampler2D uTex;
       uniform vec2 uRes, uCenter;
-      uniform float uFace[${N}], uRatio[${N}];
+      uniform float uFace[${N}];
       uniform bool uWarp;
+      uniform int uFrom, uTo;
+      uniform float uT, uRot, uR0;
       out vec4 color;
       const float PI = 3.14159265;
+
+      // Exact radius of a shape at face-local angle phi
+      float shapeR(int id, float phi, float rf) {
+        float c = cos(phi), s = sin(phi);
+        if (id == 1) return 0.9 * uR0 / max(abs(c), abs(s));
+        if (id == 2) return uR0;
+        if (id == 3) { float a = 1.3 * uR0, b = 0.72 * uR0; return a * b / length(vec2(b * c, a * s)); }
+        if (id == 4) { float k = mod(phi + PI / 2.0, 2.0 * PI / 3.0) - PI / 3.0; return 0.675 * uR0 / cos(k); }
+        return rf;
+      }
+
+      vec2 warp(vec2 p) {
+        vec2 d = p - uCenter;
+        float r = length(d);
+        if (!uWarp || r <= 0.0) return p;
+        float a = atan(d.y, d.x);
+        float f = (a + PI) / (2.0 * PI) * ${N}.0;
+        int i0 = int(floor(f)) % ${N};
+        int i1 = (i0 + 1) % ${N};
+        float rf = mix(uFace[i0], uFace[i1], fract(f));
+        float rs = mix(shapeR(uFrom, a - uRot, rf), shapeR(uTo, a - uRot, rf), uT);
+        float on = mix(uFrom > 0 ? 1.0 : 0.0, uTo > 0 ? 1.0 : 0.0, uT);
+        // Hard cut: the shape shows the face slightly inset, and just outside it
+        // jumps straight to what lies beyond the face, so the edge is crisp.
+        float inner = rf * (1.0 - 0.06 * on);
+        float outer = rf * (1.0 + 0.15 * on);
+        float rout = max(rs, outer) * 1.6;
+        float src = r;
+        if (r < rs) src = r * inner / rs;
+        else if (r < rout) src = outer + (r - rs) * (rout - outer) / (rout - rs);
+        return uCenter + d / r * src;
+      }
+
       void main() {
         // mirrored, top-left origin video pixel coordinates
         vec2 p = vec2(uRes.x - gl_FragCoord.x, uRes.y - gl_FragCoord.y);
-        vec2 q = p;
-        vec2 d = p - uCenter;
-        float r = length(d);
-        if (uWarp && r > 0.0) {
-          float f = (atan(d.y, d.x) + PI) / (2.0 * PI) * ${N}.0;
-          int i0 = int(floor(f)) % ${N};
-          int i1 = (i0 + 1) % ${N};
-          float t = fract(f);
-          float rf = mix(uFace[i0], uFace[i1], t);
-          float rs = rf * mix(uRatio[i0], uRatio[i1], t);
-          float rout = max(rf, rs) * 1.6;
-          float src = r;
-          if (r < rs) src = r * rf / rs;                                 // face fills the shape
-          else if (r < rout) src = rf + (r - rs) * (rout - rf) / (rout - rs); // blend back to normal
-          q = uCenter + d / r * src;
-        }
-        color = texture(uTex, q / uRes);
+        // 4x supersampling keeps the sharp edge from looking jagged
+        vec4 c = vec4(0.0);
+        c += texture(uTex, warp(p + vec2(-0.25, -0.25)) / uRes);
+        c += texture(uTex, warp(p + vec2( 0.25, -0.25)) / uRes);
+        c += texture(uTex, warp(p + vec2(-0.25,  0.25)) / uRes);
+        c += texture(uTex, warp(p + vec2( 0.25,  0.25)) / uRes);
+        color = c * 0.25;
       }`;
 
     function compile(type, src) {
@@ -292,7 +338,8 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     const u = name => gl.getUniformLocation(prog, name);
-    const uRes = u('uRes'), uCenter = u('uCenter'), uFace = u('uFace'), uRatio = u('uRatio'), uWarp = u('uWarp');
+    const uRes = u('uRes'), uCenter = u('uCenter'), uFace = u('uFace'), uWarp = u('uWarp');
+    const uFrom = u('uFrom'), uTo = u('uTo'), uT = u('uT'), uRot = u('uRot'), uR0 = u('uR0');
 
     function render() {
       gl.viewport(0, 0, W, H);
@@ -300,7 +347,11 @@
       gl.uniform2f(uRes, W, H);
       gl.uniform2f(uCenter, center.x, center.y);
       gl.uniform1fv(uFace, faceR);
-      gl.uniform1fv(uRatio, ratio);
+      gl.uniform1i(uFrom, shapeFrom);
+      gl.uniform1i(uTo, shapeTo);
+      gl.uniform1f(uT, shapeT * shapeT * (3 - 2 * shapeT)); // ease in-out
+      gl.uniform1f(uRot, rot);
+      gl.uniform1f(uR0, r0 * shapeSize.value / 100);
       gl.uniform1i(uWarp, faceR[0] > 0 ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
@@ -309,7 +360,7 @@
     function layout() {
       if (!W) return;
       const maxW = window.innerWidth * slider.value / 100;
-      const maxH = window.innerHeight - 220;
+      const maxH = window.innerHeight - 260;
       const scale = Math.min(maxW / W, maxH / H);
       canvas.style.width = W * scale + 'px';
       canvas.style.height = H * scale + 'px';
@@ -364,6 +415,7 @@
       step = 2;
       step1.hidden = true;
       step2.hidden = false;
+      shapeSize.hidden = false;
       setStatus();
     });
     document.getElementById('remark').addEventListener('click', () => {
@@ -371,6 +423,7 @@
       shape = null;
       shapeBtns.forEach(b => b.setAttribute('aria-pressed', 'false'));
       step2.hidden = true;
+      shapeSize.hidden = true;
       step1.hidden = false;
       setStatus();
     });
@@ -405,7 +458,7 @@
         onLandmarks(landmarker.detectForVideo(video, now).faceLandmarks[0]);
         if (wasSeen !== faceSeen) setStatus();
       }
-      updateWarp();
+      updateWarp(now);
       render();
       placeMarkers();
     }
