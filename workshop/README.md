@@ -17,3 +17,7 @@ To start a new project, create a new folder inside `workshop/`.
 
 - Black (`#000`) and white (`#fff`) only, unless a project asks for more.
 - No corner radius anywhere: every UI element is sharp-cornered.
+
+## Tech rules
+
+- Use WebGPU for all rendering and GPU work in new projects (not WebGL or 2D canvas drawing of effects).
