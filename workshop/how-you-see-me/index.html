@@ -245,8 +245,8 @@
     <h2>SETTINGS</h2>
     <p>
       Images are made free through <a href="https://puter.com" target="_blank" rel="noopener">Puter</a>, using
-      Google’s Gemini image model. Sign in once — “Continue as guest” is fine, no sign-up form needed.
-      Generations use that account’s free allowance. No key or billing needed.
+      Google’s Gemini image model. Log in once with a free Puter account (make one at puter.com if you
+      don’t have one). Generations use that account’s free allowance. No key or billing needed.
     </p>
     <div class="puter-row">
       <span id="puterStatus">PUTER: NOT SIGNED IN</span>
@@ -585,12 +585,12 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
 
     // Sign-in opens a popup, which browsers only allow straight from a click, so this must be
     // called synchronously inside a click handler (before any await) whenever possible.
-    // Guest accounts are created automatically if the user doesn't want to sign up.
+    // Uses Puter's normal log-in screen (guest auto-sign-up gets blocked on some networks).
     function puterSignIn() {
       const p = window.puter;
-      if (!p) return loadPuter().then(pp => pp.auth.signIn({ attempt_temp_user_creation: true }));
+      if (!p) return loadPuter().then(pp => pp.auth.signIn());
       if (p.auth.isSignedIn()) return Promise.resolve();
-      return p.auth.signIn({ attempt_temp_user_creation: true });
+      return p.auth.signIn();
     }
     async function refreshPuterStatus() {
       const status = $('puterStatus');
@@ -666,6 +666,9 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       const code = err?.error || err?.code;
       if (code === 'popup_blocked') return 'The Puter sign-in popup was blocked. Allow pop-ups for this site, then try again.';
       if (code === 'auth_window_closed') return 'Puter sign-in was closed before it finished.';
+      if (/sign.?up.*blocked|blocked.*sign.?up/i.test(JSON.stringify(err ?? ''))) {
+        return 'Puter blocked a new sign-up from this network. Make a Puter account on another network (e.g. a phone hotspot), then log in here.';
+      }
       return (typeof err === 'string' && err) || err?.message || err?.msg ||
         err?.error?.message || (typeof err?.error === 'string' && err.error) || 'Something went wrong';
     }
