@@ -899,15 +899,32 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
     }
     // All image URLs in the Space's reply, in order. Before/after sliders return [input, output],
     // so the result is the last one.
+    // Images can come back as full URLs, data URLs, or just a server file path; turn paths into URLs.
+    const IMAGE_PATH = /\.(png|jpe?g|webp|gif|avif)(\?|$)/i;
+    function fileUrl(path) {
+      const cfg = spaceClient?.config || {};
+      const root = String(cfg.root || '').replace(/\/$/, '');
+      return root ? `${root}${cfg.api_prefix || ''}/file=${path}` : null;
+    }
     function imageUrls(v, out = []) {
       if (!v) return out;
-      if (typeof v === 'string') { if (/^(https?:|data:image)/.test(v)) out.push(v); }
-      else if (Array.isArray(v)) v.forEach(x => imageUrls(x, out));
+      if (typeof v === 'string') {
+        if (/^(https?:|data:image|blob:)/.test(v)) out.push(v);
+        else if (IMAGE_PATH.test(v)) { const u = fileUrl(v); if (u) out.push(u); }
+      } else if (Array.isArray(v)) v.forEach(x => imageUrls(x, out));
       else if (typeof v === 'object') {
-        if (typeof v.url === 'string') out.push(v.url);
+        if (typeof v.url === 'string' && v.url) out.push(v.url);
+        else if (typeof v.path === 'string' && v.path) { const u = fileUrl(v.path); if (u) out.push(u); }
         else Object.values(v).forEach(x => imageUrls(x, out));
       }
       return out;
+    }
+    // Short description of an unexpected reply, for the error message
+    function describe(v) {
+      try {
+        const txt = JSON.stringify(v, (k, x) => (typeof x === 'string' && x.length > 60 ? x.slice(0, 57) + '…' : x));
+        return txt ? txt.slice(0, 180) : String(v);
+      } catch { return String(v); }
     }
 
     // Status line: over the photo while nothing is shown yet, or in the corner tag once the warp is up
@@ -955,7 +972,10 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
         }
       }
       const url = imageUrls(output).pop();
-      if (!url) throw new Error('The model didn’t return an image.');
+      if (!url) {
+        console.warn('Space reply without an image:', output);
+        throw new Error('The model didn’t return an image. Reply: ' + describe(output));
+      }
       // Keep a local copy so SAVE works and the image doesn't depend on the Space staying up
       try { const r = await fetch(url); if (r.ok) return await r.blob(); } catch {}
       return url;
