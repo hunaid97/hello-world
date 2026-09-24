@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How You See Me</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; border-radius: 0; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: 'IBM Plex Mono', ui-monospace, monospace;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+    }
+    body {
+      display: flex;
+      justify-content: center;
+      padding: 32px 16px;
+    }
+
+    /* Layout follows the sketch: canvas 1050 wide, generated panel 800 wide, 50 gap */
+    .app {
+      width: min(100%, calc((100vh - 200px) * 2.9));
+      display: grid;
+      grid-template-columns: 1050fr 800fr;
+      column-gap: calc(100% * 50 / 1900);
+      row-gap: 24px;
+    }
+    .panel {
+      position: relative;
+      border: 2px solid #fff;
+      overflow: hidden;
+      background: #000;
+    }
+    #draw {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1050 / 650;
+      touch-action: none;
+      cursor: crosshair;
+    }
+    .result { aspect-ratio: 5 / 4; align-self: start; }
+    .result img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .result img[hidden] { display: none; }
+    .placeholder {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      text-align: center;
+      font-size: clamp(14px, 1.6vw, 22px);
+      letter-spacing: 0.1em;
+      pointer-events: none;
+    }
+    .placeholder.over { background: rgba(0, 0, 0, 0.6); }
+    .hint {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-size: clamp(14px, 1.6vw, 22px);
+      letter-spacing: 0.1em;
+      pointer-events: none;
+    }
+    .hint[hidden], .placeholder[hidden] { display: none; }
+    .tag {
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      background: #000;
+      padding: 2px 6px;
+    }
+    .compare {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      display: flex;
+      gap: 6px;
+    }
+    .compare[hidden] { display: none; }
+
+    /* Controls under the canvas */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      align-self: start;
+      gap: 8px;
+    }
+    .controls .sep { width: 1px; height: 36px; background: #fff; margin: 0 4px; }
+    .controls .push { margin-left: auto; }
+
+    button {
+      font: inherit;
+      letter-spacing: inherit;
+      padding: 8px 14px;
+      background: #000;
+      color: #fff;
+      border: 1px solid #fff;
+      cursor: pointer;
+    }
+    button:hover, button[aria-pressed="true"] { background: #fff; color: #000; }
+    button:disabled { opacity: 0.4; cursor: default; background: #000; color: #fff; }
+    button:focus-visible, input:focus-visible { outline: 1px solid #fff; outline-offset: 2px; }
+    button.primary { background: #fff; color: #000; }
+    button.primary:hover { background: #000; color: #fff; }
+    button.primary:disabled { background: #fff; color: #000; }
+    .compare button, .tag-btn { padding: 4px 10px; font-size: 12px; }
+
+    input[type="range"] {
+      width: 100px;
+      margin: 0 4px;
+      height: 20px;
+      background: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-runnable-track { height: 1px; background: #fff; }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      margin-top: -5.5px;
+      background: #fff;
+      border: none;
+    }
+    input[type="range"]::-moz-range-track { height: 1px; background: #fff; }
+    input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: none; }
+
+    /* Real feed, bottom right */
+    .feed-wrap { display: flex; justify-content: flex-end; align-items: flex-start; gap: 12px; }
+    .feed-label { font-size: 11px; letter-spacing: 0.12em; line-height: 1.4; text-align: right; }
+    .feed {
+      width: 40%;
+      aspect-ratio: 5 / 4;
+      border: 1px solid #fff;
+      overflow: hidden;
+    }
+    .feed video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      display: block;
+    }
+
+    /* Settings */
+    dialog {
+      background: #000;
+      color: #fff;
+      border: 1px solid #fff;
+      padding: 24px;
+      width: min(480px, calc(100vw - 32px));
+      font: inherit;
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.8); }
+    dialog h2 { font-size: 14px; font-weight: 500; letter-spacing: 0.12em; margin: 0 0 16px; }
+    dialog p { font-size: 12px; line-height: 1.5; margin: 0 0 16px; }
+    dialog a { color: #fff; }
+    dialog label { display: block; font-size: 11px; letter-spacing: 0.12em; margin: 12px 0 6px; }
+    dialog input[type="text"], dialog input[type="password"] {
+      width: 100%;
+      font: inherit;
+      padding: 8px 10px;
+      background: #000;
+      color: #fff;
+      border: 1px solid #fff;
+    }
+    dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+    .error { color: #fff; }
+
+    @media (max-width: 800px) {
+      .app { grid-template-columns: 1fr; width: 100%; }
+      .controls { order: 1; }
+      .result { order: 2; }
+      .feed-wrap { order: 3; }
+      .feed { width: 50%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="panel">
+      <canvas id="draw" width="1050" height="650" aria-label="Drawing canvas"></canvas>
+      <div class="hint" id="drawHint">DRAW THEIR FACE</div>
+    </div>
+
+    <div class="panel result">
+      <img id="photoImg" alt="Captured photo" hidden>
+      <img id="genImg" alt="Generated image" hidden>
+      <span class="tag" id="resultTag" hidden></span>
+      <div class="placeholder" id="resultMsg">CAPTURE A PHOTO</div>
+      <div class="compare" id="compare" hidden>
+        <button id="showPhoto" aria-pressed="false">PHOTO</button>
+        <button id="showGen" aria-pressed="true">GENERATED</button>
+        <button id="save">SAVE</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="pen" aria-pressed="true">PEN</button>
+      <button id="eraser" aria-pressed="false">ERASER</button>
+      <input id="brush" type="range" min="2" max="40" value="6" aria-label="Brush size">
+      <button id="undo">UNDO</button>
+      <button id="clear">CLEAR</button>
+      <span class="sep"></span>
+      <button id="capture">CAPTURE</button>
+      <button id="generate" class="primary" disabled>GENERATE</button>
+      <button id="settingsBtn" class="push" aria-label="Settings">KEY</button>
+    </div>
+
+    <div class="feed-wrap">
+      <div class="feed-label">REAL<br>FEED</div>
+      <div class="feed"><video id="cam" autoplay playsinline muted></video></div>
+    </div>
+  </main>
+
+  <dialog id="settings">
+    <h2>GEMINI API KEY</h2>
+    <p>
+      Images are made with Google Gemini. Get a key at
+      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
+      It is saved in this browser only and sent straight to Google — never to this site.
+    </p>
+    <form method="dialog" id="settingsForm">
+      <label for="keyInput">API KEY</label>
+      <input id="keyInput" type="password" autocomplete="off" spellcheck="false">
+      <label for="modelInput">MODEL</label>
+      <input id="modelInput" type="text" autocomplete="off" spellcheck="false">
+      <div class="row">
+        <button value="cancel" formnovalidate>CANCEL</button>
+        <button value="save" class="primary">SAVE</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    const DEFAULT_MODEL = 'gemini-2.5-flash-image';
+    const PROMPT = `You are given two images.
+Image 1 is a photo of a real person.
+Image 2 is a quick hand-drawn sketch of that same person, drawn by someone else.
+
+Create a new photorealistic photo of the person in image 1, keeping their identity cues, skin tone, hair colour, clothing, lighting, background and camera framing, but reshape their face and head to literally follow the sketch: head shape, hair shape, eye size, shape and spacing, eyebrows, nose, mouth, ears, and any extra details that were drawn (glasses, beard, freckles, accessories, expressions).
+Exaggerate exactly as much as the sketch does. If the eyes are drawn huge, make them huge. If something is lopsided, tiny, missing or odd, reflect that faithfully. Do not correct or beautify the drawing.
+The result should look like a real, believable photograph, funny because it follows the drawing so literally. Do not include any text, the sketch itself, or a side-by-side. Output one image.`;
+
+    const $ = id => document.getElementById(id);
+    const canvas = $('draw');
+    const ctx = canvas.getContext('2d');
+    const video = $('cam');
+
+    // ---------- storage (per-browser convenience) ----------
+    const store = {
+      get(k) { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
+      set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+    };
+
+    // ---------- drawing ----------
+    let tool = 'pen';
+    const strokes = [];
+    let current = null;
+
+    function paint(target, fg, bg) {
+      const c = target.getContext('2d');
+      c.fillStyle = bg;
+      c.fillRect(0, 0, target.width, target.height);
+      c.lineCap = 'round';
+      c.lineJoin = 'round';
+      for (const s of strokes) {
+        c.strokeStyle = s.tool === 'eraser' ? bg : fg;
+        c.fillStyle = c.strokeStyle;
+        c.lineWidth = s.size;
+        if (s.points.length === 1) {
+          c.beginPath();
+          c.arc(s.points[0].x, s.points[0].y, s.size / 2, 0, Math.PI * 2);
+          c.fill();
+          continue;
+        }
+        c.beginPath();
+        c.moveTo(s.points[0].x, s.points[0].y);
+        for (let i = 1; i < s.points.length; i++) c.lineTo(s.points[i].x, s.points[i].y);
+        c.stroke();
+      }
+    }
+    const redraw = () => {
+      paint(canvas, '#fff', '#000');
+      $('drawHint').hidden = strokes.length > 0;
+      updateGenerate();
+    };
+
+    function point(e) {
+      const r = canvas.getBoundingClientRect();
+      return { x: (e.clientX - r.left) / r.width * canvas.width, y: (e.clientY - r.top) / r.height * canvas.height };
+    }
+    canvas.addEventListener('pointerdown', e => {
+      canvas.setPointerCapture(e.pointerId);
+      current = { tool, size: +$('brush').value * (tool === 'eraser' ? 3 : 1), points: [point(e)] };
+      strokes.push(current);
+      redraw();
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (!current) return;
+      current.points.push(point(e));
+      redraw();
+    });
+    const endStroke = () => { current = null; };
+    canvas.addEventListener('pointerup', endStroke);
+    canvas.addEventListener('pointercancel', endStroke);
+
+    const setTool = t => {
+      tool = t;
+      $('pen').setAttribute('aria-pressed', String(t === 'pen'));
+      $('eraser').setAttribute('aria-pressed', String(t === 'eraser'));
+    };
+    $('pen').onclick = () => setTool('pen');
+    $('eraser').onclick = () => setTool('eraser');
+    $('undo').onclick = () => { strokes.pop(); redraw(); };
+    $('clear').onclick = () => { strokes.length = 0; redraw(); };
+    document.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); strokes.pop(); redraw(); }
+    });
+
+    // The model gets black lines on white, which reads more clearly as a sketch
+    function drawingData() {
+      const off = document.createElement('canvas');
+      off.width = canvas.width;
+      off.height = canvas.height;
+      paint(off, '#000', '#fff');
+      return off.toDataURL('image/png');
+    }
+
+    // ---------- camera + capture ----------
+    let photo = null; // data URL, 5:4, mirrored to match the feed
+
+    navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false })
+      .then(stream => { video.srcObject = stream; })
+      .catch(err => { showMessage('CAMERA UNAVAILABLE: ' + err.message.toUpperCase()); $('capture').disabled = true; });
+
+    $('capture').onclick = () => {
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw) return;
+      const ratio = 5 / 4;
+      let sw = vw, sh = vw / ratio;
+      if (sh > vh) { sh = vh; sw = vh * ratio; }
+      const out = document.createElement('canvas');
+      out.width = Math.min(1024, Math.round(sw));
+      out.height = Math.round(out.width / ratio);
+      const c = out.getContext('2d');
+      c.translate(out.width, 0);
+      c.scale(-1, 1);
+      c.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, out.width, out.height);
+      photo = out.toDataURL('image/jpeg', 0.9);
+      $('photoImg').src = photo;
+      $('genImg').removeAttribute('src');
+      $('capture').textContent = 'RETAKE';
+      $('compare').hidden = true;
+      showPhoto();
+      updateGenerate();
+    };
+
+    // ---------- result panel ----------
+    function showMessage(text, over = false) {
+      const m = $('resultMsg');
+      m.textContent = text;
+      m.hidden = !text;
+      m.classList.toggle('over', over);
+    }
+    function showPhoto() {
+      $('photoImg').hidden = false;
+      $('genImg').hidden = true;
+      $('resultTag').hidden = false;
+      $('resultTag').textContent = 'PHOTO';
+      $('showPhoto').setAttribute('aria-pressed', 'true');
+      $('showGen').setAttribute('aria-pressed', 'false');
+      showMessage('');
+    }
+    function showGenerated() {
+      $('photoImg').hidden = true;
+      $('genImg').hidden = false;
+      $('resultTag').hidden = false;
+      $('resultTag').textContent = 'HOW YOU SEE ME';
+      $('showPhoto').setAttribute('aria-pressed', 'false');
+      $('showGen').setAttribute('aria-pressed', 'true');
+      showMessage('');
+    }
+    $('showPhoto').onclick = showPhoto;
+    $('showGen').onclick = showGenerated;
+    $('save').onclick = () => {
+      const a = document.createElement('a');
+      a.href = $('genImg').src;
+      a.download = 'how-you-see-me.png';
+      a.click();
+    };
+
+    let busy = false;
+    function updateGenerate() {
+      $('generate').disabled = busy || !photo || strokes.length === 0;
+    }
+
+    // ---------- settings ----------
+    const settings = $('settings');
+    function openSettings() {
+      $('keyInput').value = store.get('gemini-key');
+      $('modelInput').value = store.get('gemini-model') || DEFAULT_MODEL;
+      settings.showModal();
+    }
+    $('settingsBtn').onclick = openSettings;
+    settings.addEventListener('close', () => {
+      if (settings.returnValue !== 'save') return;
+      store.set('gemini-key', $('keyInput').value.trim());
+      store.set('gemini-model', $('modelInput').value.trim() || DEFAULT_MODEL);
+    });
+
+    // ---------- generation ----------
+    const b64 = dataUrl => dataUrl.slice(dataUrl.indexOf(',') + 1);
+
+    async function generate() {
+      const key = store.get('gemini-key');
+      if (!key) { openSettings(); return; }
+      const model = store.get('gemini-model') || DEFAULT_MODEL;
+
+      busy = true;
+      updateGenerate();
+      $('compare').hidden = true;
+      showPhoto();
+      showMessage('GENERATING…', true);
+
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: PROMPT },
+                { inlineData: { mimeType: 'image/jpeg', data: b64(photo) } },
+                { inlineData: { mimeType: 'image/png', data: b64(drawingData()) } },
+              ],
+            }],
+            generationConfig: {
+              responseModalities: ['TEXT', 'IMAGE'],
+              imageConfig: { aspectRatio: '5:4' },
+            },
+          }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error?.message || `Request failed (${res.status})`);
+
+        const cand = json.candidates?.[0];
+        const parts = cand?.content?.parts || [];
+        const img = parts.find(p => p.inlineData || p.inline_data);
+        if (!img) {
+          const text = parts.map(p => p.text).filter(Boolean).join(' ');
+          const why = json.promptFeedback?.blockReason || cand?.finishReason;
+          throw new Error(text || (why ? `No image returned (${why})` : 'No image returned'));
+        }
+        const data = img.inlineData || img.inline_data;
+        $('genImg').src = `data:${data.mimeType || data.mime_type || 'image/png'};base64,${data.data}`;
+        await $('genImg').decode().catch(() => {});
+        showGenerated();
+        $('compare').hidden = false;
+      } catch (err) {
+        showMessage('COULDN’T GENERATE: ' + err.message, true);
+      } finally {
+        busy = false;
+        updateGenerate();
+      }
+    }
+    $('generate').onclick = generate;
+
+    redraw();
+  </script>
+</body>
+</html>
