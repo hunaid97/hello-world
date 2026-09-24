@@ -51,6 +51,19 @@ public class ScrollRendererTest {
         check(ScrollRenderer.resumeWord(4) == 0, "resume clamps at start");
         check(r.isFinished(r.columnCount()), "finished after last column");
 
+        // Sub-pixel frames: at a whole-column offset they match the plain frame;
+        // half-way between, lit pixels fade (about a quarter brightness with gamma 2)
+        int[] whole = r.frame(off + 20, 13, 4095);
+        int[] wholeD = r.frame((double) (off + 20), 13, 4095);
+        check(java.util.Arrays.equals(whole, wholeD), "fractional renderer matches at whole offsets");
+        int[] half = r.frame(off + 20.5, 13, 4095);
+        boolean partial = false;
+        for (int v : half) if (v > 0 && v < 4095) partial = true;
+        check(partial, "half-way frame has in-between brightness");
+        int maxHalf = 0;
+        for (int v : half) maxHalf = Math.max(maxHalf, v);
+        check(maxHalf <= 4095, "brightness never exceeds 4095");
+
         // Print a preview of "HELLO" as ASCII to eyeball the font
         ScrollRenderer hello = new ScrollRenderer("HELLO WORLD");
         int[] strip = hello.frame(0, 40, 1);

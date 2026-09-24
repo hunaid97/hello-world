@@ -81,7 +81,12 @@ public class ReaderService extends Service implements SensorEventListener {
 
     private ScrollRenderer renderer;
     private String storyId;
-    private int offset;
+    private double offset;          // fractional strip column at the matrix's left edge
+    private long lastTickMs;
+    private int lastSavedWord = -1;
+
+    /** Frame interval: ~50 updates a second for smooth sub-pixel scrolling. */
+    private static final long FRAME_MS = 20;
 
     private long firstJolt;
     private long lastJolt;
@@ -231,6 +236,8 @@ public class ReaderService extends Service implements SensorEventListener {
         int start = story.position >= renderer.wordCount() ? 0 : story.position;
         offset = renderer.offsetForWord(start, matrixSize);
         playing = true;
+        lastTickMs = SystemClock.uptimeMillis();
+        lastSavedWord = -1;
         if (!playLock.isHeld()) playLock.acquire(60 * 60 * 1000L);
         if (glyphReady) {
             try {
@@ -274,11 +281,18 @@ public class ReaderService extends Service implements SensorEventListener {
                 return;
             }
             showFrame(renderer.frame(offset, matrixSize, ScrollRenderer.MAX_BRIGHTNESS));
-            // Save progress every word or so, in case the app is killed
-            if (offset % 16 == 0) store.setPosition(storyId, renderer.wordAt(offset, matrixSize));
-            offset++;
-            long delay = (long) (1000f / StoryStore.columnsPerSecond(store.speed()));
-            worker.postDelayed(this, delay);
+            // Save progress when the word changes, in case the app is killed
+            int word = renderer.wordAt(offset, matrixSize);
+            if (word != lastSavedWord) {
+                lastSavedWord = word;
+                store.setPosition(storyId, word);
+            }
+            // Advance by real elapsed time so the pace stays even even if a frame is late
+            long now = SystemClock.uptimeMillis();
+            long dt = Math.min(100, now - lastTickMs);
+            lastTickMs = now;
+            offset += StoryStore.columnsPerSecond(store.speed()) * dt / 1000.0;
+            worker.postAtTime(this, now + FRAME_MS);
         }
     };
 

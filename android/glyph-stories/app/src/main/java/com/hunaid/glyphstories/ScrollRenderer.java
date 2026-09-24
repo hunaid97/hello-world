@@ -94,6 +94,45 @@ public final class ScrollRenderer {
         return out;
     }
 
+    /**
+     * Sub-pixel frame: {@code offset} can be fractional. Each LED blends the two strip columns it
+     * sits between, so letters glide across instead of jumping a whole LED per step. The blend is
+     * gamma-corrected so half-way steps look half as bright to the eye.
+     */
+    public int[] frame(double offset, int matrixSize, int brightness) {
+        int[] out = new int[matrixSize * matrixSize];
+        int top = (matrixSize - GlyphFont.HEIGHT) / 2;
+        int base = (int) Math.floor(offset);
+        double f = offset - base;
+        for (int x = 0; x < matrixSize; x++) {
+            int a = maskAt(base + x);
+            int b = maskAt(base + x + 1);
+            if ((a | b) == 0) continue;
+            for (int r = 0; r < GlyphFont.HEIGHT; r++) {
+                int bit = 1 << r;
+                double v = ((a & bit) != 0 ? 1 - f : 0) + ((b & bit) != 0 ? f : 0);
+                if (v <= 0) continue;
+                int y = top + r;
+                if (y >= 0 && y < matrixSize) out[y * matrixSize + x] = (int) Math.round(brightness * Math.pow(v, GAMMA));
+            }
+        }
+        return out;
+    }
+
+    private static final double GAMMA = 2.0;
+
+    private int maskAt(int col) {
+        return col < 0 || col >= columns.length ? 0 : columns[col];
+    }
+
+    public boolean isFinished(double offset) {
+        return offset >= columns.length;
+    }
+
+    public int wordAt(double offset, int matrixSize) {
+        return wordAt((int) Math.floor(offset), matrixSize);
+    }
+
     /** Where to resume next time: 10 words before the word the reader stopped on. */
     public static int resumeWord(int stoppedAtWord) {
         return Math.max(0, stoppedAtWord - 10);
