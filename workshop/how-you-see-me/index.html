@@ -188,10 +188,37 @@
     .key-state[hidden] { display: none; }
     .key-state span { margin-right: auto; }
     .key-state button { padding: 4px 10px; font-size: 11px; }
-    .puter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 20px; font-size: 12px; }
-    .puter-row span { margin-right: auto; }
-    .puter-row button { padding: 6px 10px; font-size: 12px; }
-    .puter-row button[hidden] { display: none; }
+
+    /* ChatGPT hand-off, shown over the result panel */
+    .handoff {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.88);
+      padding: clamp(14px, 2.5vw, 28px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 14px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .handoff[hidden] { display: none; }
+    .handoff h3 { margin: 0; font-size: 13px; font-weight: 500; letter-spacing: 0.12em; }
+    .handoff ol { margin: 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 12px; }
+    .handoff li { counter-increment: step; display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; }
+    .handoff li::before { content: counter(step); border: 1px solid #fff; text-align: center; line-height: 20px; height: 22px; }
+    .handoff li.done::before { background: #fff; color: #000; }
+    .handoff .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .handoff button, .handoff a.btn { padding: 4px 10px; font-size: 11px; }
+    a.btn {
+      display: inline-block;
+      color: #fff;
+      text-decoration: none;
+      border: 1px solid #fff;
+      letter-spacing: inherit;
+    }
+    a.btn:hover { background: #fff; color: #000; }
+    .result.dragging { outline: 2px dashed #fff; outline-offset: -10px; }
 
     .error { color: #fff; }
 
@@ -221,6 +248,31 @@
         <button id="showGen" aria-pressed="true">GENERATED</button>
         <button id="save">SAVE</button>
       </div>
+      <div class="handoff" id="handoff" hidden>
+        <h3>MAKE IT WITH CHATGPT</h3>
+        <ol>
+          <li id="stepImage"><div>
+            <span id="imageNote">COPY THE IMAGE AND PASTE IT INTO A NEW CHATGPT CHAT.</span>
+            <div class="actions">
+              <button id="copyImage">COPY IMAGE</button>
+              <a class="btn" href="https://chatgpt.com/" target="chatgpt" rel="noopener">OPEN CHATGPT</a>
+            </div>
+          </div></li>
+          <li id="stepPrompt"><div>
+            COPY THE PROMPT, PASTE IT UNDER THE IMAGE AND SEND.
+            <div class="actions"><button id="copyPrompt">COPY PROMPT</button></div>
+          </div></li>
+          <li><div>
+            WHEN CHATGPT IS DONE, RIGHT-CLICK ITS IMAGE → COPY IMAGE, THEN PASTE HERE (<span class="paste-key">⌘V</span>).
+            OR DROP THE FILE ON THIS PANEL.
+            <div class="actions">
+              <button id="uploadResult">UPLOAD FILE</button>
+              <button id="cancelHandoff">CANCEL</button>
+            </div>
+          </div></li>
+        </ol>
+      </div>
+      <input type="file" id="fileInput" accept="image/*" hidden>
     </div>
 
     <div class="controls">
@@ -244,17 +296,11 @@
   <dialog id="settings">
     <h2>SETTINGS</h2>
     <p>
-      Images are made free through <a href="https://puter.com" target="_blank" rel="noopener">Puter</a>, using
-      Google’s Gemini image model. Log in once with a free Puter account (make one at puter.com if you
-      don’t have one). Generations use that account’s free allowance. No key or billing needed.
+      By default, GENERATE hands the job to ChatGPT: the page copies everything you need and you paste
+      the result back. It uses your own ChatGPT plan, so it costs nothing extra.
     </p>
-    <div class="puter-row">
-      <span id="puterStatus">PUTER: NOT SIGNED IN</span>
-      <button type="button" id="puterSignIn">SIGN IN TO PUTER</button>
-      <button type="button" id="puterSignOut" hidden>SIGN OUT</button>
-    </div>
     <p>
-      Optional: paste your own Gemini API key to call Google directly instead. The key is kept in this
+      Optional: paste your own Gemini API key to generate automatically instead. The key is kept in this
       tab’s memory only — never saved to the browser, the site or anywhere else — and is sent only to
       Google. Closing or reloading the tab forgets it.
     </p>
@@ -278,12 +324,11 @@
 
   <script type="module">
     const DEFAULT_MODEL = 'gemini-2.5-flash-image';
-    const PROMPT = `You are given three images.
+    const INTRO = `You are given three images.
 Image 1: a photo of a real person.
 Image 2: a hand-drawn sketch of that person's face, drawn by someone else.
-Image 3: the same photo with the sketch traced over it in bright magenta lines, placed exactly where the new head must be.
-
-Treat the magenta lines in image 3 as an exact geometric template and rebuild the person's head so it matches them precisely:
+Image 3: the same photo with the sketch traced over it in bright magenta lines, placed exactly where the new head must be.`;
+    const BODY = `Treat the magenta lines in image 3 as an exact geometric template and rebuild the person's head so it matches them precisely:
 - The outline of the head and face must follow the drawn outline exactly: the same silhouette, size and position, whatever it is (a square, a triangle, a lumpy blob, a tiny pea head or a huge balloon head).
 - Every drawn feature must appear exactly where it is drawn, at exactly that size and shape. An eye drawn as a big circle becomes a big, perfectly round real eye. A dot becomes a tiny eye. A mouth drawn as a straight line becomes a flat, line-like real mouth. Uneven or lopsided features stay uneven and lopsided.
 - Anything not drawn (for example no nose, no ears, no eyebrows) should be absent or barely there. Anything extra that is drawn (glasses, hair spikes, a beard, a third eye, marks) must be added.
@@ -291,6 +336,16 @@ Treat the magenta lines in image 3 as an exact geometric template and rebuild th
 
 Render the result as a real, high-quality photograph, as if this person's actual head had been physically sculpted into the drawing: real skin texture and pores, real eyes, real hair, their own skin tone, hair colour and likeness where possible. Keep their body, clothing, lighting, background and the camera framing from image 1 unchanged.
 Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Output one photo.`;
+    const PROMPT = `${INTRO}\n\n${BODY}`;
+    // For ChatGPT the three images arrive as one picture with labelled panels
+    const CHAT_PROMPT = `The attached picture has three panels labelled 1, 2 and 3. Treat them as image 1, image 2 and image 3:
+Image 1: a photo of a real person.
+Image 2: a hand-drawn sketch of that person's face, drawn by someone else.
+Image 3: the same photo with the sketch traced over it in bright magenta lines, placed exactly where the new head must be.
+
+${BODY}
+
+Generate the image now, without asking questions. Output a single landscape 5:4 photo based on image 1, not the three panels.`;
 
     const $ = id => document.getElementById(id);
     const canvas = $('draw');
@@ -410,13 +465,16 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
 
     // Photo with the drawing traced over the detected face, so the model knows where and how big
     function guideData() {
+      return guideCanvas().toDataURL('image/jpeg', 0.9);
+    }
+    function guideCanvas() {
       const out = document.createElement('canvas');
       out.width = photoCanvas.width;
       out.height = photoCanvas.height;
       const c = out.getContext('2d');
       c.drawImage(photoCanvas, 0, 0);
       const d = drawingBox();
-      if (!d) return out.toDataURL('image/jpeg', 0.9);
+      if (!d) return out;
 
       // Target: the whole drawing (hair included) spans a bit more than the face's height,
       // centred on the face and nudged up for the top of the head. Uniform scale keeps the
@@ -431,7 +489,7 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       layer.height = canvas.height;
       paintStrokes(layer.getContext('2d'), '#ff00ff', 4 / scale);
       c.drawImage(layer, d.x, d.y, d.w, d.h, cx - d.w * scale / 2, cy - d.h * scale / 2, d.w * scale, d.h * scale);
-      return out.toDataURL('image/jpeg', 0.9);
+      return out;
     }
 
     // The model gets black lines on white, which reads more clearly as a sketch
@@ -556,7 +614,6 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       showKeyState();
       $('modelInput').value = store.get('gemini-model') || DEFAULT_MODEL;
       settings.showModal();
-      refreshPuterStatus();
     }
     $('settingsBtn').onclick = openSettings;
     settings.addEventListener('close', () => {
@@ -570,62 +627,6 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
     // ---------- generation ----------
     const b64 = dataUrl => dataUrl.slice(dataUrl.indexOf(',') + 1);
 
-    // Free route: Puter.js (each user signs in to their own free Puter account)
-    let puterReady = null;
-    function loadPuter() {
-      puterReady ??= new Promise((resolve, reject) => {
-        const el = document.createElement('script');
-        el.src = 'https://js.puter.com/v2/';
-        el.onload = () => resolve(window.puter);
-        el.onerror = () => { puterReady = null; reject(new Error('Could not load Puter')); };
-        document.head.appendChild(el);
-      });
-      return puterReady;
-    }
-
-    // Sign-in opens a popup, which browsers only allow straight from a click, so this must be
-    // called synchronously inside a click handler (before any await) whenever possible.
-    // Uses Puter's normal log-in screen (guest auto-sign-up gets blocked on some networks).
-    function puterSignIn() {
-      const p = window.puter;
-      if (!p) return loadPuter().then(pp => pp.auth.signIn());
-      if (p.auth.isSignedIn()) return Promise.resolve();
-      return p.auth.signIn();
-    }
-    async function refreshPuterStatus() {
-      const status = $('puterStatus');
-      try {
-        const p = await loadPuter();
-        const signedIn = p.auth.isSignedIn();
-        let name = '';
-        if (signedIn) name = (await p.auth.getUser().catch(() => null))?.username || '';
-        status.textContent = signedIn ? `PUTER: SIGNED IN${name ? ' AS ' + name.toUpperCase() : ''}` : 'PUTER: NOT SIGNED IN';
-        $('puterSignIn').hidden = signedIn;
-        $('puterSignOut').hidden = !signedIn;
-      } catch {
-        status.textContent = 'PUTER: COULD NOT LOAD';
-      }
-    }
-    $('puterSignIn').onclick = () => {
-      $('puterStatus').textContent = 'PUTER: SIGNING IN…';
-      puterSignIn()
-        .catch(err => { $('puterStatus').textContent = 'PUTER: ' + errorText(err).toUpperCase(); throw err; })
-        .then(refreshPuterStatus, () => {});
-    };
-    $('puterSignOut').onclick = async () => {
-      (await loadPuter()).auth.signOut();
-      refreshPuterStatus();
-    };
-
-    async function viaPuter(model) {
-      const puter = await loadPuter();
-      const img = await puter.ai.txt2img(PROMPT, {
-        model,
-        input_images: [photo, drawingData(), guideData()],
-        ratio: { w: 5, h: 4 },
-      });
-      return img.src;
-    }
 
     // Own-key route: Gemini REST API
     async function viaGemini(key, model) {
@@ -662,22 +663,11 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       return `data:${data.mimeType || data.mime_type || 'image/png'};base64,${data.data}`;
     }
 
-    function errorText(err) {
-      const code = err?.error || err?.code;
-      if (code === 'popup_blocked') return 'The Puter sign-in popup was blocked. Allow pop-ups for this site, then try again.';
-      if (code === 'auth_window_closed') return 'Puter sign-in was closed before it finished.';
-      if (/sign.?up.*blocked|blocked.*sign.?up/i.test(JSON.stringify(err ?? ''))) {
-        return 'Puter blocked a new sign-up from this network. Make a Puter account on another network (e.g. a phone hotspot), then log in here.';
-      }
-      return (typeof err === 'string' && err) || err?.message || err?.msg ||
-        err?.error?.message || (typeof err?.error === 'string' && err.error) || 'Something went wrong';
-    }
+    const errorText = err => (typeof err === 'string' && err) || err?.message || 'Something went wrong';
 
     async function generate() {
-      const key = geminiKey;
+      if (!geminiKey) { startHandoff(); return; }
       const model = store.get('gemini-model') || DEFAULT_MODEL;
-      // Start Puter sign-in right away, while the click still counts as a user gesture
-      const signedIn = key ? Promise.resolve() : puterSignIn();
 
       busy = true;
       updateGenerate();
@@ -686,16 +676,8 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       showMessage('GENERATING…', true);
 
       try {
-        if (!key && !window.puter?.auth.isSignedIn()) {
-          showMessage('SIGN IN TO PUTER IN THE POP-UP…', true);
-          await signedIn;
-          showMessage('GENERATING…', true);
-        }
         await faceFound;
-        $('genImg').src = key ? await viaGemini(key, model) : await viaPuter(model);
-        await $('genImg').decode().catch(() => {});
-        showGenerated();
-        $('compare').hidden = false;
+        setResult(await viaGemini(geminiKey, model));
       } catch (err) {
         showMessage('COULDN’T GENERATE: ' + errorText(err), true);
       } finally {
@@ -703,10 +685,127 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
         updateGenerate();
       }
     }
+
+    // ---------- ChatGPT hand-off ----------
+    // One picture with the photo, the sketch and the traced template side by side, labelled 1–3
+    async function compositeBlob() {
+      await faceFound;
+      const W = photoCanvas.width, H = photoCanvas.height, gap = Math.round(W * 0.03);
+      const out = document.createElement('canvas');
+      out.width = W * 3 + gap * 2;
+      out.height = H;
+      const c = out.getContext('2d');
+      c.fillStyle = '#000';
+      c.fillRect(0, 0, out.width, out.height);
+
+      const sketch = document.createElement('canvas');
+      sketch.width = canvas.width;
+      sketch.height = canvas.height;
+      paint(sketch, '#000', '#fff');
+
+      c.drawImage(photoCanvas, 0, 0);
+      c.fillStyle = '#fff';
+      c.fillRect(W + gap, 0, W, H);
+      const k = Math.min(W / sketch.width, H / sketch.height);
+      c.drawImage(sketch, W + gap + (W - sketch.width * k) / 2, (H - sketch.height * k) / 2, sketch.width * k, sketch.height * k);
+      c.drawImage(guideCanvas(), (W + gap) * 2, 0);
+
+      const size = Math.round(H * 0.06);
+      c.font = `500 ${size}px 'IBM Plex Mono', monospace`;
+      ['1 PHOTO', '2 SKETCH', '3 TEMPLATE'].forEach((label, i) => {
+        const x = (W + gap) * i + size * 0.5, y = size * 0.5;
+        const w = c.measureText(label).width + size;
+        c.fillStyle = '#000';
+        c.fillRect(x, y, w, size * 1.6);
+        c.fillStyle = '#fff';
+        c.fillText(label, x + size * 0.5, y + size * 1.15);
+      });
+      return new Promise(res => out.toBlob(res, 'image/png'));
+    }
+
+    function download(blob, name) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    }
+
+    // Must run inside a click: clipboard writes need a user gesture and a focused page
+    function copyImage() {
+      const blob = compositeBlob();
+      $('imageNote').textContent = 'COPYING…';
+      let done;
+      try {
+        done = navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      } catch (err) {
+        done = Promise.reject(err);
+      }
+      done.then(() => {
+        $('imageNote').textContent = 'IMAGE COPIED. PASTE IT INTO A NEW CHATGPT CHAT.';
+        $('stepImage').classList.add('done');
+      }).catch(async () => {
+        download(await blob, 'how-you-see-me-input.png');
+        $('imageNote').textContent = 'COULDN’T COPY, SO IT WAS SAVED AS A FILE. ATTACH THAT FILE IN CHATGPT.';
+        $('stepImage').classList.add('done');
+      });
+    }
+
+    function startHandoff() {
+      $('stepImage').classList.remove('done');
+      $('stepPrompt').classList.remove('done');
+      $('compare').hidden = true;
+      showPhoto();
+      $('handoff').hidden = false;
+      copyImage();
+    }
+    $('copyImage').onclick = copyImage;
+    $('copyPrompt').onclick = () => {
+      navigator.clipboard.writeText(CHAT_PROMPT).then(
+        () => { $('copyPrompt').textContent = 'PROMPT COPIED'; $('stepPrompt').classList.add('done'); },
+        () => { download(new Blob([CHAT_PROMPT], { type: 'text/plain' }), 'prompt.txt'); },
+      );
+      setTimeout(() => { $('copyPrompt').textContent = 'COPY PROMPT'; }, 2500);
+    };
+    $('cancelHandoff').onclick = () => { $('handoff').hidden = true; };
+    $('uploadResult').onclick = () => $('fileInput').click();
+    $('fileInput').onchange = e => { const f = e.target.files[0]; if (f) setResult(f); e.target.value = ''; };
+    document.querySelectorAll('.paste-key').forEach(el => {
+      el.textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘V' : 'CTRL+V';
+    });
+
+    // Bring the finished image back: paste anywhere, or drop onto the result panel
+    document.addEventListener('paste', e => {
+      if (!photo) return;
+      const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+      if (!item) return;
+      e.preventDefault();
+      setResult(item.getAsFile());
+    });
+    const resultPanel = document.querySelector('.result');
+    resultPanel.addEventListener('dragover', e => { e.preventDefault(); resultPanel.classList.add('dragging'); });
+    resultPanel.addEventListener('dragleave', () => resultPanel.classList.remove('dragging'));
+    resultPanel.addEventListener('drop', e => {
+      e.preventDefault();
+      resultPanel.classList.remove('dragging');
+      const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/'));
+      if (file) setResult(file);
+      else showMessage('COULDN’T READ THAT. RIGHT-CLICK THE IMAGE IN CHATGPT → COPY IMAGE, THEN PASTE HERE.', true);
+    });
+
+    let resultUrl = null;
+    async function setResult(src) {
+      if (resultUrl) URL.revokeObjectURL(resultUrl);
+      resultUrl = src instanceof Blob ? URL.createObjectURL(src) : null;
+      $('genImg').src = resultUrl || src;
+      await $('genImg').decode().catch(() => {});
+      $('handoff').hidden = true;
+      showGenerated();
+      $('compare').hidden = false;
+    }
     $('generate').onclick = generate;
 
     redraw();
-    loadPuter().catch(() => {}); // warm up so Generate responds quickly
     loadLandmarker().catch(() => {});
   </script>
 </body>
