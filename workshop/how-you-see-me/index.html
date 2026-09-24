@@ -257,13 +257,19 @@
 
   <script>
     const DEFAULT_MODEL = 'gemini-2.5-flash-image';
-    const PROMPT = `You are given two images.
-Image 1 is a photo of a real person.
-Image 2 is a quick hand-drawn sketch of that same person, drawn by someone else.
+    const PROMPT = `You are given three images.
+Image 1: a photo of a real person.
+Image 2: a hand-drawn sketch of that person's face, drawn by someone else.
+Image 3: the same photo with the sketch traced over it in bright magenta lines, placed exactly where the new head must be.
 
-Create a new photorealistic photo of the person in image 1, keeping their identity cues, skin tone, hair colour, clothing, lighting, background and camera framing, but reshape their face and head to literally follow the sketch: head shape, hair shape, eye size, shape and spacing, eyebrows, nose, mouth, ears, and any extra details that were drawn (glasses, beard, freckles, accessories, expressions).
-Exaggerate exactly as much as the sketch does. If the eyes are drawn huge, make them huge. If something is lopsided, tiny, missing or odd, reflect that faithfully. Do not correct or beautify the drawing.
-The result should look like a real, believable photograph, funny because it follows the drawing so literally. Do not include any text, the sketch itself, or a side-by-side. Output one image.`;
+Treat the magenta lines in image 3 as an exact geometric template and rebuild the person's head so it matches them precisely:
+- The outline of the head and face must follow the drawn outline exactly: the same silhouette, size and position, whatever it is (a square, a triangle, a lumpy blob, a tiny pea head or a huge balloon head).
+- Every drawn feature must appear exactly where it is drawn, at exactly that size and shape. An eye drawn as a big circle becomes a big, perfectly round real eye. A dot becomes a tiny eye. A mouth drawn as a straight line becomes a flat, line-like real mouth. Uneven or lopsided features stay uneven and lopsided.
+- Anything not drawn (for example no nose, no ears, no eyebrows) should be absent or barely there. Anything extra that is drawn (glasses, hair spikes, a beard, a third eye, marks) must be added.
+- Do NOT normalise the anatomy, fix proportions, add missing features or make it look like a normal human face. The more literal and extreme, the better.
+
+Render the result as a real, high-quality photograph, as if this person's actual head had been physically sculpted into the drawing: real skin texture and pores, real eyes, real hair, their own skin tone, hair colour and likeness where possible. Keep their body, clothing, lighting, background and the camera framing from image 1 unchanged.
+Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Output one photo.`;
 
     const $ = id => document.getElementById(id);
     const canvas = $('draw');
@@ -341,6 +347,66 @@ The result should look like a real, believable photograph, funny because it foll
       if ((e.metaKey || e.ctrlKey) && e.key === 'z') { e.preventDefault(); strokes.pop(); redraw(); }
     });
 
+    // Strokes only, on a transparent canvas (eraser cuts out); minWidth keeps lines visible when scaled down
+    function paintStrokes(c, color, minWidth = 0) {
+      c.lineCap = 'round';
+      c.lineJoin = 'round';
+      for (const s of strokes) {
+        c.globalCompositeOperation = s.tool === 'eraser' ? 'destination-out' : 'source-over';
+        c.strokeStyle = c.fillStyle = color;
+        c.lineWidth = s.tool === 'eraser' ? s.size : Math.max(s.size, minWidth);
+        c.beginPath();
+        if (s.points.length === 1) {
+          c.arc(s.points[0].x, s.points[0].y, c.lineWidth / 2, 0, Math.PI * 2);
+          c.fill();
+          continue;
+        }
+        c.moveTo(s.points[0].x, s.points[0].y);
+        for (let i = 1; i < s.points.length; i++) c.lineTo(s.points[i].x, s.points[i].y);
+        c.stroke();
+      }
+      c.globalCompositeOperation = 'source-over';
+    }
+
+    // Bounding box of what was drawn with the pen, in canvas pixels
+    function drawingBox() {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const s of strokes) {
+        if (s.tool === 'eraser') continue;
+        for (const p of s.points) {
+          x0 = Math.min(x0, p.x - s.size / 2); y0 = Math.min(y0, p.y - s.size / 2);
+          x1 = Math.max(x1, p.x + s.size / 2); y1 = Math.max(y1, p.y + s.size / 2);
+        }
+      }
+      return x0 < x1 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+    }
+
+    // Photo with the drawing traced over the detected face, so the model knows where and how big
+    function guideData() {
+      const out = document.createElement('canvas');
+      out.width = photoCanvas.width;
+      out.height = photoCanvas.height;
+      const c = out.getContext('2d');
+      c.drawImage(photoCanvas, 0, 0);
+      const d = drawingBox();
+      if (!d) return out.toDataURL('image/jpeg', 0.9);
+
+      // Target: the whole drawing (hair included) spans a bit more than the face's height,
+      // centred on the face and nudged up for the top of the head. Uniform scale keeps the
+      // drawn proportions exactly.
+      const f = faceBox || { x: out.width * 0.3, y: out.height * 0.2, w: out.width * 0.4, h: out.height * 0.55 };
+      const targetH = f.h * 1.35;
+      const scale = Math.min(targetH / d.h, (out.width * 0.95) / d.w);
+      const cx = f.x + f.w / 2, cy = f.y + f.h / 2 - f.h * 0.12;
+
+      const layer = document.createElement('canvas');
+      layer.width = canvas.width;
+      layer.height = canvas.height;
+      paintStrokes(layer.getContext('2d'), '#ff00ff', 4 / scale);
+      c.drawImage(layer, d.x, d.y, d.w, d.h, cx - d.w * scale / 2, cy - d.h * scale / 2, d.w * scale, d.h * scale);
+      return out.toDataURL('image/jpeg', 0.9);
+    }
+
     // The model gets black lines on white, which reads more clearly as a sketch
     function drawingData() {
       const off = document.createElement('canvas');
@@ -351,7 +417,37 @@ The result should look like a real, believable photograph, funny because it foll
     }
 
     // ---------- camera + capture ----------
-    let photo = null; // data URL, 5:4, mirrored to match the feed
+    let photo = null;       // data URL, 5:4, mirrored to match the feed
+    let photoCanvas = null; // same photo as a canvas
+    let faceFound = Promise.resolve();
+    let faceBox = null;     // face bounds in photo pixels, if found
+
+    // Face detection (MediaPipe) to line the drawing up with the real face
+    let landmarkerReady = null;
+    function loadLandmarker() {
+      landmarkerReady ??= (async () => {
+        const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
+        const { FaceLandmarker, FilesetResolver } = await import(`${base}/vision_bundle.mjs`);
+        const files = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+        return FaceLandmarker.createFromOptions(files, {
+          baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task' },
+          runningMode: 'IMAGE',
+          numFaces: 1,
+        });
+      })().catch(err => { landmarkerReady = null; throw err; });
+      return landmarkerReady;
+    }
+    async function detectFace(img) {
+      try {
+        const lm = (await loadLandmarker()).detect(img).faceLandmarks[0];
+        if (!lm) return null;
+        const xs = lm.map(p => p.x * img.width), ys = lm.map(p => p.y * img.height);
+        const x = Math.min(...xs), y = Math.min(...ys);
+        return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+      } catch {
+        return null; // fall back to a centred guess
+      }
+    }
 
     navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false })
       .then(stream => { video.srcObject = stream; })
@@ -371,6 +467,9 @@ The result should look like a real, believable photograph, funny because it foll
       c.scale(-1, 1);
       c.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, out.width, out.height);
       photo = out.toDataURL('image/jpeg', 0.9);
+      photoCanvas = out;
+      faceBox = null;
+      faceFound = detectFace(out).then(box => { if (photoCanvas === out) faceBox = box; });
       $('photoImg').src = photo;
       $('genImg').removeAttribute('src');
       $('capture').textContent = 'RETAKE';
@@ -452,7 +551,7 @@ The result should look like a real, believable photograph, funny because it foll
       const puter = await loadPuter();
       const img = await puter.ai.txt2img(PROMPT, {
         model,
-        input_images: [photo, drawingData()],
+        input_images: [photo, drawingData(), guideData()],
         ratio: { w: 5, h: 4 },
       });
       return img.src;
@@ -469,6 +568,7 @@ The result should look like a real, believable photograph, funny because it foll
               { text: PROMPT },
               { inlineData: { mimeType: 'image/jpeg', data: b64(photo) } },
               { inlineData: { mimeType: 'image/png', data: b64(drawingData()) } },
+              { inlineData: { mimeType: 'image/jpeg', data: b64(guideData()) } },
             ],
           }],
           generationConfig: {
@@ -506,6 +606,7 @@ The result should look like a real, believable photograph, funny because it foll
       showMessage('GENERATING…', true);
 
       try {
+        await faceFound;
         $('genImg').src = key ? await viaGemini(key, model) : await viaPuter(model);
         await $('genImg').decode().catch(() => {});
         showGenerated();
@@ -521,6 +622,7 @@ The result should look like a real, believable photograph, funny because it foll
 
     redraw();
     loadPuter().catch(() => {}); // warm up so Generate responds quickly
+    loadLandmarker().catch(() => {});
   </script>
 </body>
 </html>
