@@ -189,37 +189,6 @@
     .key-state span { margin-right: auto; }
     .key-state button { padding: 4px 10px; font-size: 11px; }
 
-    /* ChatGPT hand-off, shown over the result panel */
-    .handoff {
-      position: absolute;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.88);
-      padding: clamp(14px, 2.5vw, 28px);
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      gap: 14px;
-      font-size: 12px;
-      line-height: 1.5;
-    }
-    .handoff[hidden] { display: none; }
-    .handoff h3 { margin: 0; font-size: 13px; font-weight: 500; letter-spacing: 0.12em; }
-    .handoff ol { margin: 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 12px; }
-    .handoff li { counter-increment: step; display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; }
-    .handoff li::before { content: counter(step); border: 1px solid #fff; text-align: center; line-height: 20px; height: 22px; }
-    .handoff li.done::before { background: #fff; color: #000; }
-    .handoff .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-    .handoff button, .handoff a.btn { padding: 4px 10px; font-size: 11px; }
-    a.btn {
-      display: inline-block;
-      color: #fff;
-      text-decoration: none;
-      border: 1px solid #fff;
-      letter-spacing: inherit;
-    }
-    a.btn:hover { background: #fff; color: #000; }
-    .result.dragging { outline: 2px dashed #fff; outline-offset: -10px; }
-
     .error { color: #fff; }
 
     @media (max-width: 800px) {
@@ -248,31 +217,6 @@
         <button id="showGen" aria-pressed="true">GENERATED</button>
         <button id="save">SAVE</button>
       </div>
-      <div class="handoff" id="handoff" hidden>
-        <h3>MAKE IT WITH CHATGPT</h3>
-        <ol>
-          <li id="stepImage"><div>
-            <span id="imageNote">COPY THE IMAGE AND PASTE IT INTO A NEW CHATGPT CHAT.</span>
-            <div class="actions">
-              <button id="copyImage">COPY IMAGE</button>
-              <a class="btn" href="https://chatgpt.com/" target="chatgpt" rel="noopener">OPEN CHATGPT</a>
-            </div>
-          </div></li>
-          <li id="stepPrompt"><div>
-            COPY THE PROMPT, PASTE IT UNDER THE IMAGE AND SEND.
-            <div class="actions"><button id="copyPrompt">COPY PROMPT</button></div>
-          </div></li>
-          <li><div>
-            WHEN CHATGPT IS DONE, RIGHT-CLICK ITS IMAGE → COPY IMAGE, THEN PASTE HERE (<span class="paste-key">⌘V</span>).
-            OR DROP THE FILE ON THIS PANEL.
-            <div class="actions">
-              <button id="uploadResult">UPLOAD FILE</button>
-              <button id="cancelHandoff">CANCEL</button>
-            </div>
-          </div></li>
-        </ol>
-      </div>
-      <input type="file" id="fileInput" accept="image/*" hidden>
     </div>
 
     <div class="controls">
@@ -296,16 +240,23 @@
   <dialog id="settings">
     <h2>SETTINGS</h2>
     <p>
-      By default, GENERATE hands the job to ChatGPT: the page copies everything you need and you paste
-      the result back. It uses your own ChatGPT plan, so it costs nothing extra.
+      Images are made for free by FLUX Kontext running on a public Hugging Face Space. It works without
+      an account, but anonymous use has a small daily allowance. For more, paste a free Hugging Face
+      token (huggingface.co → Settings → Access Tokens, “Read” is enough; no card needed).
     </p>
     <p>
-      Optional: paste your own Gemini API key to generate automatically instead. The key is kept in this
-      tab’s memory only — never saved to the browser, the site or anywhere else — and is sent only to
-      Google. Closing or reloading the tab forgets it.
+      Tokens and keys are kept in this tab’s memory only — never saved to the browser, the site or
+      anywhere else — and are sent only to the service they belong to. Closing or reloading forgets them.
     </p>
     <form method="dialog" id="settingsForm">
-      <label for="keyInput">GEMINI API KEY (OPTIONAL)</label>
+      <label for="hfInput">HUGGING FACE TOKEN (OPTIONAL, FREE)</label>
+      <input id="hfInput" class="secret" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
+      <div class="key-state" id="hfState" hidden>
+        <span>TOKEN SET FOR THIS TAB</span>
+        <button type="button" id="forgetHf">FORGET TOKEN</button>
+      </div>
+      <label for="keyInput">GEMINI API KEY (OPTIONAL, PAID; USED INSTEAD IF SET)</label>
       <!-- Plain text field masked with CSS so password managers don't offer to save it -->
       <input id="keyInput" class="secret" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
              data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
@@ -313,7 +264,7 @@
         <span>KEY SET FOR THIS TAB</span>
         <button type="button" id="forgetKey">FORGET KEY</button>
       </div>
-      <label for="modelInput">MODEL</label>
+      <label for="modelInput">GEMINI MODEL</label>
       <input id="modelInput" type="text" autocomplete="off" spellcheck="false">
       <div class="row">
         <button value="cancel" formnovalidate>CANCEL</button>
@@ -337,15 +288,8 @@ Image 3: the same photo with the sketch traced over it in bright magenta lines, 
 Render the result as a real, high-quality photograph, as if this person's actual head had been physically sculpted into the drawing: real skin texture and pores, real eyes, real hair, their own skin tone, hair colour and likeness where possible. Keep their body, clothing, lighting, background and the camera framing from image 1 unchanged.
 Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Output one photo.`;
     const PROMPT = `${INTRO}\n\n${BODY}`;
-    // For ChatGPT the three images arrive as one picture with labelled panels
-    const CHAT_PROMPT = `The attached picture has three panels labelled 1, 2 and 3. Treat them as image 1, image 2 and image 3:
-Image 1: a photo of a real person.
-Image 2: a hand-drawn sketch of that person's face, drawn by someone else.
-Image 3: the same photo with the sketch traced over it in bright magenta lines, placed exactly where the new head must be.
-
-${BODY}
-
-Generate the image now, without asking questions. Output a single landscape 5:4 photo based on image 1, not the three panels.`;
+    // FLUX Kontext edits one image from a short instruction: it gets the photo with the drawing traced on
+    const KONTEXT_PROMPT = `Rebuild this person's head so it exactly matches the magenta line drawing on top of it. The head and face outline follows the magenta outline exactly, whatever its shape. Each eye, eyebrow, nose, mouth and ear becomes exactly the size, shape and position of the magenta lines, however strange, lopsided or exaggerated; features that are not drawn disappear and extra drawn details are added. Keep it a realistic photograph with real skin, real eyes and real hair, the same person, clothes, lighting and background. Remove all magenta lines.`;
 
     const $ = id => document.getElementById(id);
     const canvas = $('draw');
@@ -361,8 +305,9 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
     // The Gemini key lives only in this module-scoped variable: not in any storage, not on window,
     // and not reachable from other scripts. Earlier versions saved it, so wipe any old copy.
     let geminiKey = '';
+    let hfToken = '';
     try { localStorage.removeItem('gemini-key'); sessionStorage.removeItem('gemini-key'); } catch {}
-    window.addEventListener('pagehide', () => { geminiKey = ''; });
+    window.addEventListener('pagehide', () => { geminiKey = ''; hfToken = ''; });
 
     // ---------- drawing ----------
     let tool = 'pen';
@@ -607,10 +552,14 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
     function showKeyState() {
       $('keyState').hidden = !geminiKey;
       $('keyInput').placeholder = geminiKey ? 'PASTE A NEW KEY TO REPLACE' : 'PASTE KEY';
+      $('hfState').hidden = !hfToken;
+      $('hfInput').placeholder = hfToken ? 'PASTE A NEW TOKEN TO REPLACE' : 'hf_…';
     }
     $('forgetKey').onclick = () => { geminiKey = ''; showKeyState(); };
+    $('forgetHf').onclick = () => { hfToken = ''; spaceClient = null; showKeyState(); };
     function openSettings() {
       $('keyInput').value = '';
+      $('hfInput').value = '';
       showKeyState();
       $('modelInput').value = store.get('gemini-model') || DEFAULT_MODEL;
       settings.showModal();
@@ -618,9 +567,12 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
     $('settingsBtn').onclick = openSettings;
     settings.addEventListener('close', () => {
       const typed = $('keyInput').value.trim();
-      $('keyInput').value = ''; // never leave the key sitting in the field
+      const typedHf = $('hfInput').value.trim();
+      $('keyInput').value = ''; // never leave secrets sitting in the fields
+      $('hfInput').value = '';
       if (settings.returnValue !== 'save') return;
       if (typed) geminiKey = typed;
+      if (typedHf) { hfToken = typedHf; spaceClient = null; }
       store.set('gemini-model', $('modelInput').value.trim() || DEFAULT_MODEL);
     });
 
@@ -663,10 +615,9 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
       return `data:${data.mimeType || data.mime_type || 'image/png'};base64,${data.data}`;
     }
 
-    const errorText = err => (typeof err === 'string' && err) || err?.message || 'Something went wrong';
+    const errorText = err => (typeof err === 'string' && err) || err?.message || err?.title || 'Something went wrong';
 
     async function generate() {
-      if (!geminiKey) { startHandoff(); return; }
       const model = store.get('gemini-model') || DEFAULT_MODEL;
 
       busy = true;
@@ -677,7 +628,7 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
 
       try {
         await faceFound;
-        setResult(await viaGemini(geminiKey, model));
+        setResult(geminiKey ? await viaGemini(geminiKey, model) : await viaSpace());
       } catch (err) {
         showMessage('COULDN’T GENERATE: ' + errorText(err), true);
       } finally {
@@ -686,112 +637,82 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
       }
     }
 
-    // ---------- ChatGPT hand-off ----------
-    // One picture with the photo, the sketch and the traced template side by side, labelled 1–3
-    async function compositeBlob() {
-      await faceFound;
-      const W = photoCanvas.width, H = photoCanvas.height, gap = Math.round(W * 0.03);
-      const out = document.createElement('canvas');
-      out.width = W * 3 + gap * 2;
-      out.height = H;
-      const c = out.getContext('2d');
-      c.fillStyle = '#000';
-      c.fillRect(0, 0, out.width, out.height);
+    // ---------- free route: FLUX Kontext on a Hugging Face Space ----------
+    const SPACE = 'black-forest-labs/FLUX.1-Kontext-Dev';
+    const GRADIO = 'https://cdn.jsdelivr.net/npm/@gradio/client@2.7.0/dist/index.min.js';
+    let spaceClient = null;
 
-      const sketch = document.createElement('canvas');
-      sketch.width = canvas.width;
-      sketch.height = canvas.height;
-      paint(sketch, '#000', '#fff');
+    const canvasBlob = (cnv, type, q) => new Promise(res => cnv.toBlob(res, type, q));
 
-      c.drawImage(photoCanvas, 0, 0);
-      c.fillStyle = '#fff';
-      c.fillRect(W + gap, 0, W, H);
-      const k = Math.min(W / sketch.width, H / sketch.height);
-      c.drawImage(sketch, W + gap + (W - sketch.width * k) / 2, (H - sketch.height * k) / 2, sketch.width * k, sketch.height * k);
-      c.drawImage(guideCanvas(), (W + gap) * 2, 0);
-
-      const size = Math.round(H * 0.06);
-      c.font = `500 ${size}px 'IBM Plex Mono', monospace`;
-      ['1 PHOTO', '2 SKETCH', '3 TEMPLATE'].forEach((label, i) => {
-        const x = (W + gap) * i + size * 0.5, y = size * 0.5;
-        const w = c.measureText(label).width + size;
-        c.fillStyle = '#000';
-        c.fillRect(x, y, w, size * 1.6);
-        c.fillStyle = '#fff';
-        c.fillText(label, x + size * 0.5, y + size * 1.15);
-      });
-      return new Promise(res => out.toBlob(res, 'image/png'));
+    // Pick the Space's image-editing endpoint and fill its inputs by what each parameter is,
+    // so small changes to the Space's API don't break the page.
+    function pickEndpoint(api) {
+      const eps = Object.entries(api.named_endpoints || {});
+      const hasImage = ([, info]) => info.parameters.some(isImageParam);
+      return eps.find(([name, info]) => name === '/infer' && hasImage([name, info])) || eps.find(hasImage);
+    }
+    function isImageParam(p) {
+      return /image/i.test(p.component || '') || (/image/i.test(p.parameter_name || '') && /blob|file/i.test(p.type || p.python_type?.type || ''));
+    }
+    // Find the first image URL anywhere in the Space's reply
+    function findImageUrl(v) {
+      if (!v) return null;
+      if (typeof v === 'string') return /^(https?:|data:image)/.test(v) ? v : null;
+      if (Array.isArray(v)) { for (const x of v) { const u = findImageUrl(x); if (u) return u; } return null; }
+      if (typeof v === 'object') return v.url || findImageUrl(v.image) || findImageUrl(v.value) || null;
+      return null;
     }
 
-    function download(blob, name) {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    }
-
-    // Must run inside a click: clipboard writes need a user gesture and a focused page
-    function copyImage() {
-      const blob = compositeBlob();
-      $('imageNote').textContent = 'COPYING…';
-      let done;
-      try {
-        done = navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      } catch (err) {
-        done = Promise.reject(err);
+    async function viaSpace() {
+      const { Client, handle_file } = await import(GRADIO);
+      if (!spaceClient) {
+        showMessage('CONNECTING TO THE MODEL…', true);
+        spaceClient = await Client.connect(SPACE, {
+          ...(hfToken ? { token: hfToken } : {}),
+          status_callback: st => {
+            if (st.status === 'sleeping' || st.status === 'building') showMessage('WAKING THE MODEL UP… THIS CAN TAKE A MINUTE', true);
+          },
+        }).catch(err => { throw new Error('Could not reach the model: ' + errorText(err)); });
       }
-      done.then(() => {
-        $('imageNote').textContent = 'IMAGE COPIED. PASTE IT INTO A NEW CHATGPT CHAT.';
-        $('stepImage').classList.add('done');
-      }).catch(async () => {
-        download(await blob, 'how-you-see-me-input.png');
-        $('imageNote').textContent = 'COULDN’T COPY, SO IT WAS SAVED AS A FILE. ATTACH THAT FILE IN CHATGPT.';
-        $('stepImage').classList.add('done');
-      });
+      const api = await spaceClient.view_api();
+      const picked = pickEndpoint(api);
+      if (!picked) throw new Error('The model’s API has changed; the page needs updating.');
+      const [endpoint, info] = picked;
+
+      const guide = handle_file(await canvasBlob(guideCanvas(), 'image/jpeg', 0.92));
+      const data = {};
+      for (const p of info.parameters) {
+        const name = p.parameter_name;
+        if (isImageParam(p)) data[name] = guide;
+        else if (/prompt/i.test(name) || /prompt/i.test(p.label || '')) data[name] = KONTEXT_PROMPT;
+        else if (/random/i.test(name)) data[name] = true;
+        else if (p.parameter_has_default) data[name] = p.parameter_default;
+      }
+
+      showMessage('GENERATING…', true);
+      let output = null;
+      for await (const msg of spaceClient.submit(endpoint, data)) {
+        if (msg.type === 'status') {
+          if (msg.stage === 'error') throw new Error(quotaHint(String(msg.message || 'The model returned an error')));
+          if (msg.queue && msg.position > 0) showMessage(`IN THE QUEUE: ${msg.position} AHEAD…`, true);
+          else if (msg.stage === 'pending' || msg.stage === 'generating') showMessage('GENERATING…', true);
+        } else if (msg.type === 'data') {
+          output = msg.data;
+          break;
+        }
+      }
+      const url = findImageUrl(output);
+      if (!url) throw new Error('The model didn’t return an image.');
+      // Keep a local copy so SAVE works and the image doesn't depend on the Space staying up
+      try { const r = await fetch(url); if (r.ok) return await r.blob(); } catch {}
+      return url;
     }
 
-    function startHandoff() {
-      $('stepImage').classList.remove('done');
-      $('stepPrompt').classList.remove('done');
-      $('compare').hidden = true;
-      showPhoto();
-      $('handoff').hidden = false;
-      copyImage();
+    function quotaHint(message) {
+      return /quota|exceeded|limit/i.test(message)
+        ? message + ' Add a free Hugging Face token in SETTINGS for more, or try again later.'
+        : message;
     }
-    $('copyImage').onclick = copyImage;
-    $('copyPrompt').onclick = () => {
-      navigator.clipboard.writeText(CHAT_PROMPT).then(
-        () => { $('copyPrompt').textContent = 'PROMPT COPIED'; $('stepPrompt').classList.add('done'); },
-        () => { download(new Blob([CHAT_PROMPT], { type: 'text/plain' }), 'prompt.txt'); },
-      );
-      setTimeout(() => { $('copyPrompt').textContent = 'COPY PROMPT'; }, 2500);
-    };
-    $('cancelHandoff').onclick = () => { $('handoff').hidden = true; };
-    $('uploadResult').onclick = () => $('fileInput').click();
-    $('fileInput').onchange = e => { const f = e.target.files[0]; if (f) setResult(f); e.target.value = ''; };
-    document.querySelectorAll('.paste-key').forEach(el => {
-      el.textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘V' : 'CTRL+V';
-    });
-
-    // Bring the finished image back: paste anywhere, or drop onto the result panel
-    document.addEventListener('paste', e => {
-      if (!photo) return;
-      const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
-      if (!item) return;
-      e.preventDefault();
-      setResult(item.getAsFile());
-    });
-    const resultPanel = document.querySelector('.result');
-    resultPanel.addEventListener('dragover', e => { e.preventDefault(); resultPanel.classList.add('dragging'); });
-    resultPanel.addEventListener('dragleave', () => resultPanel.classList.remove('dragging'));
-    resultPanel.addEventListener('drop', e => {
-      e.preventDefault();
-      resultPanel.classList.remove('dragging');
-      const file = [...e.dataTransfer.files].find(f => f.type.startsWith('image/'));
-      if (file) setResult(file);
-      else showMessage('COULDN’T READ THAT. RIGHT-CLICK THE IMAGE IN CHATGPT → COPY IMAGE, THEN PASTE HERE.', true);
-    });
 
     let resultUrl = null;
     async function setResult(src) {
@@ -799,7 +720,6 @@ Generate the image now, without asking questions. Output a single landscape 5:4 
       resultUrl = src instanceof Blob ? URL.createObjectURL(src) : null;
       $('genImg').src = resultUrl || src;
       await $('genImg').decode().catch(() => {});
-      $('handoff').hidden = true;
       showGenerated();
       $('compare').hidden = false;
     }
