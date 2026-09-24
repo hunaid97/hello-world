@@ -73,6 +73,7 @@
     button:hover, button[aria-pressed="true"] { background: #fff; color: #000; }
     button:disabled { opacity: 0.4; cursor: default; background: #000; color: #fff; }
     button:focus-visible { outline: 1px solid #fff; outline-offset: 2px; }
+    .divider { width: 1px; align-self: stretch; background: #fff; margin: 0 4px; }
     button.icon { width: 44px; height: 38px; padding: 0; display: grid; place-items: center; }
     button.icon svg {
       width: 24px;
@@ -140,6 +141,9 @@
       <button class="icon" data-shape="square" aria-label="Square" title="Square">
         <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/></svg>
       </button>
+      <button class="icon" data-shape="rectangle" aria-label="Rectangle" title="Rectangle">
+        <svg viewBox="0 0 24 24"><rect x="2.5" y="7.25" width="19" height="9.5"/></svg>
+      </button>
       <button class="icon" data-shape="circle" aria-label="Circle" title="Circle">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/></svg>
       </button>
@@ -149,6 +153,14 @@
       <button class="icon" data-shape="triangle" aria-label="Triangle" title="Triangle">
         <svg viewBox="0 0 24 24"><polygon points="12,3.5 21,19.5 3,19.5"/></svg>
       </button>
+      <span class="divider"></span>
+      <button class="icon" data-shape="cube" aria-label="Cube" title="Cube">
+        <svg viewBox="0 0 24 24"><polygon points="12,2.5 20.5,7.25 20.5,16.75 12,21.5 3.5,16.75 3.5,7.25"/><polyline points="3.5,7.25 12,12 20.5,7.25"/><line x1="12" y1="12" x2="12" y2="21.5"/></svg>
+      </button>
+      <button class="icon" data-shape="sphere" aria-label="Sphere" title="Sphere">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="3.25"/><ellipse cx="12" cy="12" rx="3.25" ry="9"/></svg>
+      </button>
+      <span class="divider"></span>
       <button id="remark">Re-mark face</button>
     </div>
     <input id="shapeSize" type="range" min="50" max="200" value="100" aria-label="Shape size" hidden>
@@ -191,7 +203,9 @@
     let rot = 0, r0 = 0;                     // face roll and mean face radius
 
     // Shapes are drawn exactly in the shader; 0 = no shape (face as-is)
-    const SHAPES = { square: 1, circle: 2, ellipse: 3, triangle: 4 };
+    const SHAPES = { square: 1, circle: 2, ellipse: 3, triangle: 4, rectangle: 5 }; // flat, warped in 2D
+    const SOLIDS = ['cube', 'sphere'];                                              // drawn as 3D objects
+    let pose = null;                         // smoothed 3D [eyeA, eyeB, mouth] for head rotation
     let shapeFrom = 0, shapeTo = 0, shapeT = 1; // transition between shapes
     let lastNow = 0;
 
@@ -242,7 +256,7 @@
           r0 += faceR[i] / N;
         }
       }
-      const target = faceSeen && step === 2 && shape ? SHAPES[shape] : 0;
+      const target = faceSeen && step === 2 && SHAPES[shape] ? SHAPES[shape] : 0;
       if (target !== shapeTo) {
         shapeFrom = shapeTo;
         shapeTo = target;
@@ -253,7 +267,7 @@
     }
 
     // ---------- WebGL warp ----------
-    const gl = canvas.getContext('webgl2');
+    const gl = canvas.getContext('webgl2', { depth: true, antialias: true });
     const vs = `#version 300 es
       in vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
     const fs = `#version 300 es
@@ -273,6 +287,7 @@
         if (id == 1) return 0.9 * uR0 / max(abs(c), abs(s));
         if (id == 2) return uR0;
         if (id == 3) { float a = 1.3 * uR0, b = 0.72 * uR0; return a * b / length(vec2(b * c, a * s)); }
+        if (id == 5) { float a = 1.25 * uR0, b = 0.625 * uR0; return 1.0 / max(abs(c) / a, abs(s) / b); }
         if (id == 4) { float k = mod(phi + PI / 2.0, 2.0 * PI / 3.0) - PI / 3.0; return 0.675 * uR0 / cos(k); }
         return rf;
       }
@@ -324,11 +339,14 @@
     gl.linkProgram(prog);
     gl.useProgram(prog);
 
+    const quad = gl.createVertexArray();
+    gl.bindVertexArray(quad);
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
     const loc = gl.getAttribLocation(prog, 'p');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
 
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -343,6 +361,8 @@
 
     function render() {
       gl.viewport(0, 0, W, H);
+      gl.useProgram(prog);
+      gl.bindVertexArray(quad);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
       gl.uniform2f(uRes, W, H);
       gl.uniform2f(uCenter, center.x, center.y);
@@ -354,6 +374,134 @@
       gl.uniform1f(uR0, r0 * shapeSize.value / 100);
       gl.uniform1i(uWarp, faceR[0] > 0 ? 1 : 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindVertexArray(null);
+      renderSolid();
+    }
+
+    // ---------- 3D solids ----------
+    // Object-local space: x right, y down, z away from the camera (front face at z = -1).
+    // The live face is projected onto the object straight along its local z, so it sits
+    // on the front and streaks back along the sides; simple lighting makes it read as solid.
+    const vs3 = `#version 300 es
+      in vec3 aPos, aNor;
+      uniform mat3 uHead, uTilt;
+      uniform vec3 uC;
+      uniform float uS;
+      uniform vec2 uRes;
+      uniform bool uBulge;
+      out vec2 vUV;
+      out vec3 vN;
+      void main() {
+        vec3 w = uC + uHead * (uTilt * aPos) * uS;
+        // On the sphere, magnify the middle of the face and squeeze its edges so it bulges
+        vec2 xy = aPos.xy;
+        float r = length(xy);
+        if (uBulge && r > 0.0) xy *= asin(min(r, 1.0)) / (1.5708 * r);
+        vUV = (uC + uHead * vec3(xy, 0.0) * uS).xy / uRes;
+        vN = uHead * (uTilt * aNor);
+        gl_Position = vec4(1.0 - 2.0 * w.x / uRes.x, 1.0 - 2.0 * w.y / uRes.y, (w.z - uC.z) / (3.0 * uS), 1.0);
+      }`;
+    const fs3 = `#version 300 es
+      precision highp float;
+      uniform sampler2D uTex;
+      uniform float uGloss;
+      in vec2 vUV;
+      in vec3 vN;
+      out vec4 color;
+      void main() {
+        vec3 n = normalize(vN);
+        vec3 l = normalize(vec3(-0.45, -0.6, -0.8));
+        float shade = 0.25 + 0.75 * max(dot(n, l), 0.0);
+        float spec = pow(max(dot(n, normalize(l + vec3(0.0, 0.0, -1.0))), 0.0), 40.0) * uGloss;
+        color = vec4(texture(uTex, vUV).rgb * shade + spec, 1.0);
+      }`;
+    const prog3 = gl.createProgram();
+    gl.attachShader(prog3, compile(gl.VERTEX_SHADER, vs3));
+    gl.attachShader(prog3, compile(gl.FRAGMENT_SHADER, fs3));
+    gl.linkProgram(prog3);
+
+    function cubeMesh() {
+      const v = [];
+      const faces = [ // normal, then two in-plane axes
+        [[0, 0, -1], [1, 0, 0], [0, 1, 0]], [[0, 0, 1], [1, 0, 0], [0, 1, 0]],
+        [[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[-1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        [[0, 1, 0], [1, 0, 0], [0, 0, 1]], [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+      ];
+      for (const [n, a, b] of faces) {
+        const corner = (i, j) => [0, 1, 2].map(k => n[k] + a[k] * i + b[k] * j);
+        for (const [i, j] of [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]]) v.push(...corner(i, j), ...n);
+      }
+      return v;
+    }
+    function sphereMesh(rings = 32, segs = 48) {
+      const v = [];
+      const pt = (i, j) => {
+        const th = Math.PI * i / rings, ph = 2 * Math.PI * j / segs;
+        return [Math.sin(th) * Math.cos(ph), -Math.cos(th), Math.sin(th) * Math.sin(ph)];
+      };
+      for (let i = 0; i < rings; i++) for (let j = 0; j < segs; j++) {
+        const a = pt(i, j), b = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
+        for (const q of [a, b, c, a, c, d]) v.push(...q, ...q); // unit sphere: normal = position
+      }
+      return v;
+    }
+    function makeVao(prog, data) {
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+      const aPos = gl.getAttribLocation(prog, 'aPos'), aNor = gl.getAttribLocation(prog, 'aNor');
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 24, 0);
+      gl.enableVertexAttribArray(aNor);
+      gl.vertexAttribPointer(aNor, 3, gl.FLOAT, false, 24, 12);
+      gl.bindVertexArray(null);
+      return { vao, count: data.length / 6 };
+    }
+    const solids = { cube: makeVao(prog3, cubeMesh()), sphere: makeVao(prog3, sphereMesh()) };
+
+    // Fixed tilt so the cube always shows three faces; column-major 3x3
+    const tiltOf = (pitch, yaw) => {
+      const cp = Math.cos(pitch), sp = Math.sin(pitch), cy = Math.cos(yaw), sy = Math.sin(yaw);
+      // Rx(pitch) * Ry(yaw)
+      return [cy, sp * sy, -cp * sy,  0, cp, sp,  sy, -sp * cy, cp * cy];
+    };
+    const TILT = { cube: tiltOf(0.35, 0.55), sphere: tiltOf(0, 0) };
+    const SIZE = { cube: 0.95, sphere: 1.1 };
+
+    // Head rotation from 3D eye/mouth landmarks, as matrix columns [right, down, away]
+    function headMatrix() {
+      const [a, b, m] = pose;
+      const norm = v => { const l = Math.hypot(...v) || 1; return v.map(x => x / l); };
+      const ex = norm([b.x - a.x, b.y - a.y, b.z - a.z]);
+      const mv = [m.x - (a.x + b.x) / 2, m.y - (a.y + b.y) / 2, m.z - (a.z + b.z) / 2];
+      const dot = mv[0] * ex[0] + mv[1] * ex[1] + mv[2] * ex[2];
+      const ey = norm(mv.map((x, i) => x - dot * ex[i]));
+      const ez = [ex[1] * ey[2] - ex[2] * ey[1], ex[2] * ey[0] - ex[0] * ey[2], ex[0] * ey[1] - ex[1] * ey[0]];
+      return [...ex, ...ey, ...ez];
+    }
+
+    const u3 = name => gl.getUniformLocation(prog3, name);
+    const u3Head = u3('uHead'), u3Tilt = u3('uTilt'), u3C = u3('uC'), u3S = u3('uS'), u3Res = u3('uRes');
+    const u3Bulge = u3('uBulge'), u3Gloss = u3('uGloss');
+
+    function renderSolid() {
+      if (step !== 2 || !faceSeen || !SOLIDS.includes(shape)) return;
+      const mesh = solids[shape];
+      gl.useProgram(prog3);
+      gl.enable(gl.DEPTH_TEST);
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      gl.uniformMatrix3fv(u3Head, false, headMatrix());
+      gl.uniformMatrix3fv(u3Tilt, false, TILT[shape]);
+      gl.uniform3f(u3C, center.x, center.y, 0);
+      gl.uniform1f(u3S, r0 * SIZE[shape] * shapeSize.value / 100);
+      gl.uniform2f(u3Res, W, H);
+      gl.uniform1i(u3Bulge, shape === 'sphere' ? 1 : 0);
+      gl.uniform1f(u3Gloss, shape === 'sphere' ? 0.45 : 0);
+      gl.bindVertexArray(mesh.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
+      gl.bindVertexArray(null);
+      gl.disable(gl.DEPTH_TEST);
     }
 
     // ---------- layout ----------
@@ -444,6 +592,14 @@
       const nextOval = OVAL.map(px);
       const ease = (a, b) => a ? b.map((p, i) => ({ x: a[i].x + (p.x - a[i].x) * SMOOTH, y: a[i].y + (p.y - a[i].y) * SMOOTH })) : b;
       pts = ease(pts, nextPts);
+      const p3 = i => ({ x: lm[i].x * W, y: lm[i].y * H, z: lm[i].z * W });
+      const m3 = { x: mouth.x, y: mouth.y, z: (lm[LIP_TOP].z + lm[LIP_BOTTOM].z) / 2 * W };
+      const nextPose = [p3(EYE_A), p3(EYE_B), m3];
+      pose = pose ? pose.map((q, i) => ({
+        x: q.x + (nextPose[i].x - q.x) * SMOOTH,
+        y: q.y + (nextPose[i].y - q.y) * SMOOTH,
+        z: q.z + (nextPose[i].z - q.z) * SMOOTH,
+      })) : nextPose;
       oval = ease(oval, nextOval);
     }
 
