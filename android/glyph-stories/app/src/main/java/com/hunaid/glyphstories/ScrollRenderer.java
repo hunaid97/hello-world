@@ -12,6 +12,8 @@ public final class ScrollRenderer {
 
     /** Values the Glyph Matrix accepts per LED: 0 (off) to 4095 (full). */
     public static final int MAX_BRIGHTNESS = 4095;
+    /** Every lit LED uses this one fixed level (50%); unlit LEDs are 0. Nothing in between. */
+    public static final int LED_BRIGHTNESS = 2048;
 
     private final String[] words;
     private final int[] columns;      // bitmask per column (bit 0 = top text row)
@@ -95,31 +97,12 @@ public final class ScrollRenderer {
     }
 
     /**
-     * Sub-pixel frame: {@code offset} can be fractional. Each LED blends the two strip columns it
-     * sits between, so letters glide across instead of jumping a whole LED per step. The blend is
-     * gamma-corrected so half-way steps look half as bright to the eye.
+     * Frame for a fractional offset. Snaps to the nearest whole column so every LED is either
+     * fully on or off, with no in-between brightness.
      */
     public int[] frame(double offset, int matrixSize, int brightness) {
-        int[] out = new int[matrixSize * matrixSize];
-        int top = (matrixSize - GlyphFont.HEIGHT) / 2;
-        int base = (int) Math.floor(offset);
-        double f = offset - base;
-        for (int x = 0; x < matrixSize; x++) {
-            int a = maskAt(base + x);
-            int b = maskAt(base + x + 1);
-            if ((a | b) == 0) continue;
-            for (int r = 0; r < GlyphFont.HEIGHT; r++) {
-                int bit = 1 << r;
-                double v = ((a & bit) != 0 ? 1 - f : 0) + ((b & bit) != 0 ? f : 0);
-                if (v <= 0) continue;
-                int y = top + r;
-                if (y >= 0 && y < matrixSize) out[y * matrixSize + x] = (int) Math.round(brightness * Math.pow(v, GAMMA));
-            }
-        }
-        return out;
+        return frame((int) Math.round(offset), matrixSize, brightness);
     }
-
-    private static final double GAMMA = 2.0;
 
     private int maskAt(int col) {
         return col < 0 || col >= columns.length ? 0 : columns[col];

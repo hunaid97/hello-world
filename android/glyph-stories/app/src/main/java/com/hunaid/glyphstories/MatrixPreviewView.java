@@ -58,13 +58,7 @@ public class MatrixPreviewView extends View {
                 float r = l + cell - gap, b = t + cell - gap;
                 int i = y * size + x;
                 int v = frame != null && i < frame.length ? frame[i] : 0;
-                if (v > 0) {
-                    // Show sub-pixel brightness as white at partial opacity
-                    on.setAlpha(Math.max(40, Math.min(255, Math.round(255f * (float) Math.sqrt(v / 4095f)))));
-                    canvas.drawRect(l, t, r, b, on);
-                } else {
-                    canvas.drawRect(l, t, r, b, off);
-                }
+                canvas.drawRect(l, t, r, b, v > 0 ? on : off);
             }
         }
     }

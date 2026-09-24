@@ -19,8 +19,8 @@ KEYSTORE="${KEYSTORE:-$ROOT/.tools/glyph-stories.p12}"
 PKG=com.hunaid.glyphstories
 MIN_SDK=33
 TARGET_SDK=35
-VERSION_CODE="${VERSION_CODE:-1}"
-VERSION_NAME="${VERSION_NAME:-1.0}"
+VERSION_CODE="${VERSION_CODE:-4}"
+VERSION_NAME="${VERSION_NAME:-2.1}"
 MAVEN=https://repo1.maven.org/maven2
 
 fetch() { # url dest

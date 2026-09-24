@@ -286,7 +286,7 @@ public class ReaderService extends Service implements SensorEventListener {
                 // WINDOW mode: the motion sensors move the window; just draw it
                 window.setColumnsPerMeter(StoryStore.columnsPerMeter(store.sensitivity()));
                 window.setReversed(store.reversed());
-                showFrame(window.frame(ScrollRenderer.MAX_BRIGHTNESS));
+                showFrame(window.frame(ScrollRenderer.LED_BRIGHTNESS));
                 worker.postAtTime(this, SystemClock.uptimeMillis() + FRAME_MS);
                 return;
             }
@@ -299,7 +299,7 @@ public class ReaderService extends Service implements SensorEventListener {
                 buzz(new long[]{0, 120});
                 return;
             }
-            showFrame(renderer.frame(offset, matrixSize, ScrollRenderer.MAX_BRIGHTNESS));
+            showFrame(renderer.frame(offset, matrixSize, ScrollRenderer.LED_BRIGHTNESS));
             // Save progress when the word changes, in case the app is killed
             int word = renderer.wordAt(offset, matrixSize);
             if (word != lastSavedWord) {

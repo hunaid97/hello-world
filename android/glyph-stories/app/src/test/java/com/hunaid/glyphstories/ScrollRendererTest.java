@@ -51,18 +51,14 @@ public class ScrollRendererTest {
         check(ScrollRenderer.resumeWord(4) == 0, "resume clamps at start");
         check(r.isFinished(r.columnCount()), "finished after last column");
 
-        // Sub-pixel frames: at a whole-column offset they match the plain frame;
-        // half-way between, lit pixels fade (about a quarter brightness with gamma 2)
-        int[] whole = r.frame(off + 20, 13, 4095);
-        int[] wholeD = r.frame((double) (off + 20), 13, 4095);
+        // Fractional offsets snap to whole columns: every LED is fully on or off
+        int[] whole = r.frame(off + 20, 13, 2048);
+        int[] wholeD = r.frame((double) (off + 20), 13, 2048);
         check(java.util.Arrays.equals(whole, wholeD), "fractional renderer matches at whole offsets");
-        int[] half = r.frame(off + 20.5, 13, 4095);
-        boolean partial = false;
-        for (int v : half) if (v > 0 && v < 4095) partial = true;
-        check(partial, "half-way frame has in-between brightness");
-        int maxHalf = 0;
-        for (int v : half) maxHalf = Math.max(maxHalf, v);
-        check(maxHalf <= 4095, "brightness never exceeds 4095");
+        check(java.util.Arrays.equals(whole, r.frame(off + 20.3, 13, 2048)), "20.3 snaps to 20");
+        boolean binary = true;
+        for (int v : r.frame(off + 20.5, 13, 2048)) if (v != 0 && v != 2048) binary = false;
+        check(binary, "no in-between brightness");
 
         // Print a preview of "HELLO" as ASCII to eyeball the font
         ScrollRenderer hello = new ScrollRenderer("HELLO WORLD");
