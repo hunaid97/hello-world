@@ -960,21 +960,27 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       }
 
       status('MAKING IT REAL…');
-      let output = null;
-      for await (const msg of spaceClient.submit(endpoint, data)) {
+      // Listen until the job completes: some Spaces send empty updates before the real result,
+      // so keep the latest reply that actually contains an image.
+      let url = null;
+      const events = [];
+      const job = spaceClient.submit(endpoint, data);
+      for await (const msg of job) {
         if (msg.type === 'status') {
+          events.push(msg.stage + (msg.message ? ':' + String(msg.message).slice(0, 60) : ''));
           if (msg.stage === 'error') throw new Error(quotaHint(String(msg.message || 'The model returned an error')));
           if (msg.queue && msg.position > 0) status(`IN THE QUEUE: ${msg.position} AHEAD…`);
           else if (msg.stage === 'pending' || msg.stage === 'generating') status('MAKING IT REAL…');
+          if (msg.stage === 'complete' && url) break;
         } else if (msg.type === 'data') {
-          output = msg.data;
-          break;
+          events.push('data:' + describe(msg.data).slice(0, 80));
+          const found = imageUrls(msg.data).pop();
+          if (found) url = found;
         }
       }
-      const url = imageUrls(output).pop();
       if (!url) {
-        console.warn('Space reply without an image:', output);
-        throw new Error('The model didn’t return an image. Reply: ' + describe(output));
+        console.warn('Space events without an image:', events);
+        throw new Error('The model didn’t return an image. Events: ' + events.join(' | ').slice(0, 240));
       }
       // Keep a local copy so SAVE works and the image doesn't depend on the Space staying up
       try { const r = await fetch(url); if (r.ok) return await r.blob(); } catch {}
