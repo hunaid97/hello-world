@@ -133,8 +133,11 @@
         <button data-mode="0" aria-pressed="true">BLOCKS</button>
         <button data-mode="1">MONO</button>
         <button data-mode="2">GLITCH</button>
+        <button data-mode="3" title="Cover hidden faces with your own image">REPLACE</button>
+        <button id="pickImage" title="Choose the replacement image (or paste / drop one)">IMAGE…</button>
       </div>
     </div>
+    <input type="file" id="imageFile" accept="image/*" hidden>
     <div class="group">
       <span>SHAPE</span>
       <div class="row" id="shapes">
@@ -260,6 +263,7 @@
           const k = 0.6;
           best.x += (d.x - best.x) * k; best.y += (d.y - best.y) * k;
           best.w += (d.w - best.w) * k; best.h += (d.h - best.h) * k;
+          best.angle += (d.angle - best.angle) * k;
           best.seen = now;
           best.matched = true;
         } else if (tracks.length < MAX_FACES) {
@@ -431,12 +435,38 @@
         shape: f32,
         time: f32,
         count: f32,
-        _pad: vec2f,
+        stickerAspect: f32,
+        hasSticker: f32,
         rects: array<vec4f, ${MAX_FACES}>,
+        angles: array<vec4f, ${MAX_FACES / 4}>,
       };
       @group(0) @binding(0) var samp: sampler;
       @group(0) @binding(1) var vid: texture_external;
       @group(0) @binding(2) var<uniform> u: U;
+      @group(0) @binding(3) var sticker: texture_2d<f32>;
+
+      fn angleOf(i: u32) -> f32 { return u.angles[i / 4u][i % 4u]; }
+
+      // Replace mode: draw the image over each hidden face, turned with the head
+      fn replaceFaces(p: vec2f) -> vec3f {
+        var col = sampleAt(p);
+        for (var i = 0u; i < u32(u.count); i++) {
+          let r = u.rects[i];
+          let mid = (r.xy + r.zw) * 0.5;
+          let h = r.w - r.y;
+          let size = vec2f(h * u.stickerAspect, h);
+          let a = -angleOf(i);
+          let d = p - mid;
+          let l = vec2f(d.x * cos(a) - d.y * sin(a), d.x * sin(a) + d.y * cos(a));
+          let uv = l / size + 0.5;
+          if (all(uv >= vec2f(0.0)) && all(uv <= vec2f(1.0))) {
+            // The view is mirrored, so flip the image to read the right way round
+            let st = textureSampleLevel(sticker, samp, vec2f(1.0 - uv.x, uv.y), 0.0);
+            col = mix(col, st.rgb, st.a);
+          }
+        }
+        return col;
+      }
 
       @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
         var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
@@ -470,6 +500,9 @@
       @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         // Mirrored like a selfie camera; video pixel coordinates, top-left origin
         let p = vec2f(u.res.x - pos.x, pos.y);
+        if (u.mode > 2.5) {
+          return vec4f(replaceFaces(p), 1.0);
+        }
         // Global grid so blocks stay put while faces move
         let cell = floor(p / u.pix);
         let centre = (cell + 0.5) * u.pix;
@@ -524,23 +557,30 @@
         primitive: { topology: 'triangle-list' },
       });
       const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-      const ubuf = device.createBuffer({ size: 48 + 16 * MAX_FACES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      return { device, ctx, pipeline, sampler, ubuf };
+      const ubuf = device.createBuffer({ size: 48 + 16 * MAX_FACES + 4 * MAX_FACES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      // 1x1 transparent placeholder until an image is chosen
+      const empty = device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+      device.queue.writeTexture({ texture: empty }, new Uint8Array(4), { bytesPerRow: 4 }, [1, 1]);
+      return { device, ctx, pipeline, sampler, ubuf, empty };
     }
 
-    const uniforms = new Float32Array(12 + 4 * MAX_FACES);
+    const uniforms = new Float32Array(12 + 4 * MAX_FACES + MAX_FACES);
+    let sticker = null; // { texture, aspect }
     function render(now) {
       const { device, ctx, pipeline, sampler, ubuf } = gpu;
       const W = video.videoWidth, H = video.videoHeight;
       const pad = $('pad').value / 100;
+      // Replace mode without an image falls back to plain blocks
+      const mode = state.mode === 3 && !sticker ? 0 : state.mode;
       uniforms.set([W, H, +$('pw').value, +$('ph').value, $('noise').value / 100, +$('levels').value,
-                    state.mode, state.shape, now / 1000, 0, 0, 0]);
+                    mode, state.shape, now / 1000, 0, sticker ? sticker.aspect : 1, sticker ? 1 : 0]);
       const masked = tracks.filter(t => t.hidden || !state.gestures);
       uniforms[9] = masked.length;
       masked.forEach((t, i) => {
         // Padding grows the box, a little more upwards to cover hair and forehead
         const px = t.w * pad * 0.5, py = t.h * pad * 0.5;
         uniforms.set([t.x - px, t.y - py * 1.6, t.x + t.w + px, t.y + t.h + py * 0.8], 12 + i * 4);
+        uniforms[12 + 4 * MAX_FACES + i] = t.angle || 0;
       });
       device.queue.writeBuffer(ubuf, 0, uniforms);
 
@@ -550,6 +590,7 @@
           { binding: 0, resource: sampler },
           { binding: 1, resource: device.importExternalTexture({ source: video }) },
           { binding: 2, resource: { buffer: ubuf } },
+          { binding: 3, resource: (sticker ? sticker.texture : gpu.empty).createView() },
         ],
       });
       const enc = device.createCommandEncoder();
@@ -563,6 +604,50 @@
       device.queue.submit([enc.finish()]);
     }
 
+    // ---------- replacement image ----------
+    async function loadSticker(blob, remember = true) {
+      const bmp = await createImageBitmap(blob);
+      const k = Math.min(1, 768 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(bmp.width * k));
+      c.height = Math.max(1, Math.round(bmp.height * k));
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const { device } = gpu;
+      const texture = device.createTexture({
+        size: [c.width, c.height], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      device.queue.copyExternalImageToTexture({ source: c }, { texture }, [c.width, c.height]);
+      sticker?.texture.destroy();
+      sticker = { texture, aspect: c.width / c.height };
+      if (remember) { try { localStorage.setItem('pixel-faces-image', c.toDataURL('image/png')); } catch {} }
+      flash('IMAGE SET');
+    }
+    const useImage = blob => {
+      if (!blob?.type?.startsWith('image/') || !gpu) return;
+      loadSticker(blob).then(() => $('modes').querySelector('[data-mode="3"]').click()).catch(() => flash('COULDN’T READ THAT IMAGE'));
+    };
+    $('pickImage').onclick = () => $('imageFile').click();
+    $('imageFile').onchange = e => { useImage(e.target.files[0]); e.target.value = ''; };
+    document.addEventListener('paste', e => {
+      const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+      if (item) { e.preventDefault(); useImage(item.getAsFile()); }
+    });
+    document.addEventListener('dragover', e => e.preventDefault());
+    document.addEventListener('drop', e => {
+      e.preventDefault();
+      useImage([...e.dataTransfer.files].find(f => f.type.startsWith('image/')));
+    });
+    $('modes').querySelector('[data-mode="3"]').addEventListener('click', () => {
+      if (!sticker) flash('PASTE, DROP OR CHOOSE AN IMAGE');
+    });
+    async function restoreSticker() {
+      try {
+        const saved = localStorage.getItem('pixel-faces-image');
+        if (saved) await loadSticker(await (await fetch(saved)).blob(), false);
+      } catch {}
+    }
+
     // ---------- loop ----------
     let lastVideoTime = -1;
     let frame = 0;
@@ -572,9 +657,12 @@
       if (video.readyState < 2 || !detector) return;
       if (detector && video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
-        const found = detector.detectForVideo(video, now).detections.map(d => ({
-          x: d.boundingBox.originX, y: d.boundingBox.originY, w: d.boundingBox.width, h: d.boundingBox.height,
-        }));
+        const vw = video.videoWidth, vh = video.videoHeight;
+        const found = detector.detectForVideo(video, now).detections.map(d => {
+          const [re, le] = d.keypoints || [];
+          const angle = re && le ? Math.atan2((le.y - re.y) * vh, (le.x - re.x) * vw) : 0;
+          return { x: d.boundingBox.originX, y: d.boundingBox.originY, w: d.boundingBox.width, h: d.boundingBox.height, angle };
+        });
         updateTracks(found, now);
         if (state.gestures) {
           // Alternate the two models between frames to keep the frame rate up
@@ -596,6 +684,7 @@
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       msg('LOADING FACE DETECTION…');
+      restoreSticker();
       requestAnimationFrame(loop);
       detector = await loadDetector();
       msg('');
