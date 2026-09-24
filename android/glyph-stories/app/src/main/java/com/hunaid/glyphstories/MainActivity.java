@@ -27,7 +27,9 @@ public class MainActivity extends Activity implements ReaderService.Listener {
 
     private MatrixPreviewView preview;
     private TextView status, current, speedValue;
-    private Button arm, play, locked, fetch;
+    private Button arm, play, locked, fetch, mode, direction;
+    private TextView speedLabel, modeHelp;
+    private SeekBar speed;
     private LinearLayout library;
     private View reader;
     private String expandedId;
@@ -46,6 +48,10 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         play = findViewById(R.id.play);
         locked = findViewById(R.id.locked);
         fetch = findViewById(R.id.fetch);
+        mode = findViewById(R.id.mode);
+        direction = findViewById(R.id.direction);
+        speedLabel = findViewById(R.id.speed_label);
+        modeHelp = findViewById(R.id.mode_help);
         library = findViewById(R.id.library);
         reader = findViewById(R.id.reader);
 
@@ -74,13 +80,29 @@ public class MainActivity extends Activity implements ReaderService.Listener {
             }
         });
 
-        SeekBar speed = findViewById(R.id.speed);
-        speed.setProgress(store.speed());
-        speedValue.setText(String.valueOf(store.speed()));
+        mode.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (ReaderService.isPlaying()) {
+                    status.setText("STOP READING FIRST (SHAKE OR TAP STOP)");
+                    return;
+                }
+                store.setWindowMode(!store.windowMode());
+                refresh();
+            }
+        });
+        direction.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                store.setReversed(!store.reversed());
+                refresh();
+            }
+        });
+
+        speed = findViewById(R.id.speed);
         speed.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar s, int p, boolean user) {
                 int v = Math.max(1, p);
-                store.setSpeed(v);
+                if (!user) return;
+                if (store.windowMode()) store.setSensitivity(v); else store.setSpeed(v);
                 speedValue.setText(String.valueOf(v));
             }
             @Override public void onStartTrackingTouch(SeekBar s) {}
@@ -167,6 +189,18 @@ public class MainActivity extends Activity implements ReaderService.Listener {
         arm.setText(store.armed() ? "SHAKE READER: ON" : "SHAKE READER: OFF");
         setInverted(arm, store.armed());
         locked.setText(store.onlyWhenLocked() ? "ONLY WHEN LOCKED: ON" : "ONLY WHEN LOCKED: OFF");
+
+        boolean win = store.windowMode();
+        mode.setText(win ? "MODE: WINDOW" : "MODE: SCROLL");
+        direction.setVisibility(win ? View.VISIBLE : View.GONE);
+        direction.setText(store.reversed() ? "DIRECTION: REVERSED" : "DIRECTION: NORMAL");
+        modeHelp.setText(win
+                ? "WINDOW: THE MATRIX IS A WINDOW ONTO THE BOOK. SLIDE THE PHONE LEFT OR RIGHT TO READ ALONG A LINE. FLICK RIGHT (OR SLIDE PAST THE END) FOR THE NEXT LINE, FLICK LEFT FOR THE PREVIOUS ONE. SHAKE TO OPEN AND CLOSE THE BOOK."
+                : "SCROLL: THE STORY SCROLLS BY ITSELF. SHAKE TO START AND STOP.");
+        speedLabel.setText(win ? "SENSITIVITY" : "READING SPEED");
+        int sv = win ? store.sensitivity() : store.speed();
+        speed.setProgress(sv);
+        speedValue.setText(String.valueOf(sv));
 
         StoryStore.Story cur = store.current();
         current.setText(cur == null ? "NOTHING YET"

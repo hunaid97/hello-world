@@ -116,6 +116,24 @@ public final class StoryStore {
 
     public void setOnlyWhenLocked(boolean v) { prefs.edit().putBoolean("onlyLocked", v).apply(); }
 
+    /** WINDOW mode (slide the phone to read) instead of SCROLL mode (text scrolls by itself). */
+    public boolean windowMode() { return prefs.getBoolean("windowMode", false); }
+
+    public void setWindowMode(boolean v) { prefs.edit().putBoolean("windowMode", v).apply(); }
+
+    /** WINDOW mode sensitivity, 1 to 20. */
+    public int sensitivity() { return prefs.getInt("sensitivity", 10); }
+
+    public void setSensitivity(int s) { prefs.edit().putInt("sensitivity", s).apply(); }
+
+    /** LED columns revealed per metre of sideways sliding (sensitivity 10 = 5 columns per cm). */
+    public static double columnsPerMeter(int sensitivity) { return 100 * (1.5 + sensitivity * 0.35); }
+
+    /** Flip WINDOW mode's left/right in case it feels backwards. */
+    public boolean reversed() { return prefs.getBoolean("reversed", false); }
+
+    public void setReversed(boolean v) { prefs.edit().putBoolean("reversed", v).apply(); }
+
     public boolean armed() { return prefs.getBoolean("armed", false); }
 
     public void setArmed(boolean v) { prefs.edit().putBoolean("armed", v).apply(); }

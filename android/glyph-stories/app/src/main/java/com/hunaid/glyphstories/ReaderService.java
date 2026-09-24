@@ -80,6 +80,7 @@ public class ReaderService extends Service implements SensorEventListener {
     private PowerManager.WakeLock listenLock;
 
     private ScrollRenderer renderer;
+    private WindowReader window;    // non-null while reading in WINDOW mode
     private String storyId;
     private double offset;          // fractional strip column at the matrix's left edge
     private long lastTickMs;
@@ -235,6 +236,12 @@ public class ReaderService extends Service implements SensorEventListener {
         renderer = new ScrollRenderer(story.text);
         int start = story.position >= renderer.wordCount() ? 0 : story.position;
         offset = renderer.offsetForWord(start, matrixSize);
+        window = null;
+        if (store.windowMode()) {
+            window = new WindowReader(story.text, start, matrixSize,
+                    StoryStore.columnsPerMeter(store.sensitivity()), store.reversed());
+            startMotion();
+        }
         playing = true;
         lastTickMs = SystemClock.uptimeMillis();
         lastSavedWord = -1;
@@ -248,7 +255,7 @@ public class ReaderService extends Service implements SensorEventListener {
         } else {
             setStatus("GLYPH MATRIX NOT CONNECTED (SEE APP)");
         }
-        setStatus("READING: " + story.title.toUpperCase());
+        setStatus((window != null ? "WINDOW: SLIDE THE PHONE TO READ " : "READING: ") + story.title.toUpperCase());
         buzz(new long[]{0, 40});
         worker.post(tick);
     }
@@ -257,7 +264,11 @@ public class ReaderService extends Service implements SensorEventListener {
         if (!playing) return;
         playing = false;
         worker.removeCallbacks(tick);
-        if (renderer != null && storyId != null) {
+        if (window != null) {
+            stopMotion();
+            if (storyId != null) store.setPosition(storyId, window.firstWordOfLine());
+            window = null;
+        } else if (renderer != null && storyId != null) {
             int at = renderer.wordAt(offset, matrixSize);
             store.setPosition(storyId, ScrollRenderer.resumeWord(at));
         }
@@ -271,6 +282,14 @@ public class ReaderService extends Service implements SensorEventListener {
         @Override
         public void run() {
             if (!playing || renderer == null) return;
+            if (window != null) {
+                // WINDOW mode: the motion sensors move the window; just draw it
+                window.setColumnsPerMeter(StoryStore.columnsPerMeter(store.sensitivity()));
+                window.setReversed(store.reversed());
+                showFrame(window.frame(ScrollRenderer.MAX_BRIGHTNESS));
+                worker.postAtTime(this, SystemClock.uptimeMillis() + FRAME_MS);
+                return;
+            }
             if (renderer.isFinished(offset)) {
                 playing = false;
                 store.setPosition(storyId, 0);
@@ -295,6 +314,74 @@ public class ReaderService extends Service implements SensorEventListener {
             worker.postAtTime(this, now + FRAME_MS);
         }
     };
+
+    // ---------- WINDOW mode motion ----------
+
+    private final float[] gravity = new float[3];
+    private boolean haveGravity;
+
+    /** Sideways acceleration and yaw rate drive the window. Runs on the worker thread. */
+    private final SensorEventListener motion = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent e) {
+            WindowReader w = window;
+            if (w == null) return;
+            WindowReader.Event ev;
+            switch (e.sensor.getType()) {
+                case Sensor.TYPE_LINEAR_ACCELERATION:
+                    ev = w.onSidewaysAcceleration(e.values[0], e.timestamp);
+                    break;
+                case Sensor.TYPE_ACCELEROMETER: {
+                    // No linear-acceleration sensor: remove gravity with a low-pass filter
+                    for (int i = 0; i < 3; i++) {
+                        gravity[i] = haveGravity ? 0.9f * gravity[i] + 0.1f * e.values[i] : e.values[i];
+                    }
+                    haveGravity = true;
+                    ev = w.onSidewaysAcceleration(e.values[0] - gravity[0], e.timestamp);
+                    break;
+                }
+                case Sensor.TYPE_GYROSCOPE:
+                    ev = w.onYawRate(e.values[1], e.timestamp);
+                    break;
+                default:
+                    return;
+            }
+            onWindowEvent(ev);
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    };
+
+    private void startMotion() {
+        haveGravity = false;
+        Sensor lin = sensors.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+        if (lin == null) lin = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        Sensor gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        if (lin != null) sensors.registerListener(motion, lin, SensorManager.SENSOR_DELAY_GAME, worker);
+        if (gyro != null) sensors.registerListener(motion, gyro, SensorManager.SENSOR_DELAY_GAME, worker);
+    }
+
+    private void stopMotion() {
+        sensors.unregisterListener(motion);
+    }
+
+    private void onWindowEvent(WindowReader.Event ev) {
+        switch (ev) {
+            case NEXT_LINE:
+            case PREVIOUS_LINE:
+                buzz(new long[]{0, 15});
+                store.setPosition(storyId, window.firstWordOfLine());
+                setStatus("LINE " + (window.line() + 1) + " OF " + window.lineCount());
+                break;
+            case END_OF_STORY:
+                buzz(new long[]{0, 120});
+                setStatus("END OF STORY: SHAKE TO CLOSE THE BOOK");
+                break;
+            default:
+                break;
+        }
+    }
 
     // ---------- shake ----------
 

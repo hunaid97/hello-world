@@ -51,6 +51,22 @@
                 style="@style/SharpButton"
                 android:text="ONLY WHEN LOCKED: ON" />
 
+            <Button
+                android:id="@+id/mode"
+                style="@style/SharpButton"
+                android:text="MODE: SCROLL" />
+
+            <Button
+                android:id="@+id/direction"
+                style="@style/SharpButton"
+                android:text="DIRECTION: NORMAL" />
+
+            <TextView
+                android:id="@+id/mode_help"
+                style="@style/Body"
+                android:layout_marginTop="8dp"
+                android:alpha="0.7" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -58,6 +74,7 @@
                 android:orientation="horizontal">
 
                 <TextView
+                    android:id="@+id/speed_label"
                     style="@style/Label"
                     android:layout_width="0dp"
                     android:layout_weight="1"
