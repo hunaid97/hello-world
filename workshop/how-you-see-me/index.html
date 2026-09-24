@@ -183,6 +183,10 @@
       border: 1px solid #fff;
     }
     dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+    .puter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 20px; font-size: 12px; }
+    .puter-row span { margin-right: auto; }
+    .puter-row button { padding: 6px 10px; font-size: 12px; }
+    .puter-row button[hidden] { display: none; }
 
     .error { color: #fff; }
 
@@ -236,9 +240,14 @@
     <h2>SETTINGS</h2>
     <p>
       Images are made free through <a href="https://puter.com" target="_blank" rel="noopener">Puter</a>, using
-      Google’s Gemini image model. The first time you generate, sign in or make a free Puter account;
-      generations use that account’s free allowance. No key or billing needed.
+      Google’s Gemini image model. Sign in once — “Continue as guest” is fine, no sign-up form needed.
+      Generations use that account’s free allowance. No key or billing needed.
     </p>
+    <div class="puter-row">
+      <span id="puterStatus">PUTER: NOT SIGNED IN</span>
+      <button type="button" id="puterSignIn">SIGN IN TO PUTER</button>
+      <button type="button" id="puterSignOut" hidden>SIGN OUT</button>
+    </div>
     <p>
       Optional: paste your own Gemini API key to call Google directly instead. It is saved in this
       browser only and sent straight to Google.
@@ -523,6 +532,7 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       $('keyInput').value = store.get('gemini-key');
       $('modelInput').value = store.get('gemini-model') || DEFAULT_MODEL;
       settings.showModal();
+      refreshPuterStatus();
     }
     $('settingsBtn').onclick = openSettings;
     settings.addEventListener('close', () => {
@@ -546,6 +556,40 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       });
       return puterReady;
     }
+
+    // Sign-in opens a popup, which browsers only allow straight from a click, so this must be
+    // called synchronously inside a click handler (before any await) whenever possible.
+    // Guest accounts are created automatically if the user doesn't want to sign up.
+    function puterSignIn() {
+      const p = window.puter;
+      if (!p) return loadPuter().then(pp => pp.auth.signIn({ attempt_temp_user_creation: true }));
+      if (p.auth.isSignedIn()) return Promise.resolve();
+      return p.auth.signIn({ attempt_temp_user_creation: true });
+    }
+    async function refreshPuterStatus() {
+      const status = $('puterStatus');
+      try {
+        const p = await loadPuter();
+        const signedIn = p.auth.isSignedIn();
+        let name = '';
+        if (signedIn) name = (await p.auth.getUser().catch(() => null))?.username || '';
+        status.textContent = signedIn ? `PUTER: SIGNED IN${name ? ' AS ' + name.toUpperCase() : ''}` : 'PUTER: NOT SIGNED IN';
+        $('puterSignIn').hidden = signedIn;
+        $('puterSignOut').hidden = !signedIn;
+      } catch {
+        status.textContent = 'PUTER: COULD NOT LOAD';
+      }
+    }
+    $('puterSignIn').onclick = () => {
+      $('puterStatus').textContent = 'PUTER: SIGNING IN…';
+      puterSignIn()
+        .catch(err => { $('puterStatus').textContent = 'PUTER: ' + errorText(err).toUpperCase(); throw err; })
+        .then(refreshPuterStatus, () => {});
+    };
+    $('puterSignOut').onclick = async () => {
+      (await loadPuter()).auth.signOut();
+      refreshPuterStatus();
+    };
 
     async function viaPuter(model) {
       const puter = await loadPuter();
@@ -592,12 +636,19 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       return `data:${data.mimeType || data.mime_type || 'image/png'};base64,${data.data}`;
     }
 
-    const errorText = err =>
-      (typeof err === 'string' && err) || err?.message || err?.error?.message || 'Something went wrong';
+    function errorText(err) {
+      const code = err?.error || err?.code;
+      if (code === 'popup_blocked') return 'The Puter sign-in popup was blocked. Allow pop-ups for this site, then try again.';
+      if (code === 'auth_window_closed') return 'Puter sign-in was closed before it finished.';
+      return (typeof err === 'string' && err) || err?.message || err?.msg ||
+        err?.error?.message || (typeof err?.error === 'string' && err.error) || 'Something went wrong';
+    }
 
     async function generate() {
       const key = store.get('gemini-key');
       const model = store.get('gemini-model') || DEFAULT_MODEL;
+      // Start Puter sign-in right away, while the click still counts as a user gesture
+      const signedIn = key ? Promise.resolve() : puterSignIn();
 
       busy = true;
       updateGenerate();
@@ -606,6 +657,11 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
       showMessage('GENERATING…', true);
 
       try {
+        if (!key && !window.puter?.auth.isSignedIn()) {
+          showMessage('SIGN IN TO PUTER IN THE POP-UP…', true);
+          await signedIn;
+          showMessage('GENERATING…', true);
+        }
         await faceFound;
         $('genImg').src = key ? await viaGemini(key, model) : await viaPuter(model);
         await $('genImg').decode().catch(() => {});
