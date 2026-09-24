@@ -9,34 +9,74 @@
       margin: 0;
       height: 100%;
       background: #000;
-      color: #888;
+      color: #fff;
       font-family: system-ui, sans-serif;
     }
     body {
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 32px;
       overflow: hidden;
     }
     video {
       width: 40vw;
-      max-height: 80vh;
+      max-height: calc(100vh - 160px);
       object-fit: cover;
       transform: scaleX(-1); /* mirror like a selfie camera */
       background: #000;
     }
+
+    /* Slider pinned to the bottom so it never moves when the video resizes */
     input[type="range"] {
+      position: fixed;
+      left: 50%;
+      bottom: 48px;
+      transform: translateX(-50%);
       width: min(320px, 80vw);
-      accent-color: #fff;
+      margin: 0;
+      height: 24px;
+      background: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+      cursor: pointer;
     }
+    input[type="range"]:focus { outline: none; }
+    input[type="range"]:focus-visible { outline: 1px solid #fff; outline-offset: 4px; }
+
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 2px;
+      background: #fff;
+      border-radius: 0;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px;
+      height: 16px;
+      margin-top: -7px;
+      background: #fff;
+      border: none;
+      border-radius: 0;
+    }
+    input[type="range"]::-moz-range-track {
+      height: 2px;
+      background: #fff;
+      border-radius: 0;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border: none;
+      border-radius: 0;
+    }
+
     #error {
       position: absolute;
       top: 50%;
       transform: translateY(-50%);
       text-align: center;
       padding: 0 16px;
+      margin: 0;
     }
   </style>
 </head>
