@@ -223,7 +223,7 @@
       <span class="sep"></span>
       <button id="capture">CAPTURE</button>
       <button id="generate" class="primary" disabled>GENERATE</button>
-      <button id="settingsBtn" class="push" aria-label="Settings">KEY</button>
+      <button id="settingsBtn" class="push">SETTINGS</button>
     </div>
 
     <div class="feed-wrap">
@@ -233,14 +233,18 @@
   </main>
 
   <dialog id="settings">
-    <h2>GEMINI API KEY</h2>
+    <h2>SETTINGS</h2>
     <p>
-      Images are made with Google Gemini. Get a key at
-      <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.
-      It is saved in this browser only and sent straight to Google — never to this site.
+      Images are made free through <a href="https://puter.com" target="_blank" rel="noopener">Puter</a>, using
+      Google’s Gemini image model. The first time you generate, sign in or make a free Puter account;
+      generations use that account’s free allowance. No key or billing needed.
+    </p>
+    <p>
+      Optional: paste your own Gemini API key to call Google directly instead. It is saved in this
+      browser only and sent straight to Google.
     </p>
     <form method="dialog" id="settingsForm">
-      <label for="keyInput">API KEY</label>
+      <label for="keyInput">GEMINI API KEY (OPTIONAL)</label>
       <input id="keyInput" type="password" autocomplete="off" spellcheck="false">
       <label for="modelInput">MODEL</label>
       <input id="modelInput" type="text" autocomplete="off" spellcheck="false">
@@ -431,9 +435,68 @@ The result should look like a real, believable photograph, funny because it foll
     // ---------- generation ----------
     const b64 = dataUrl => dataUrl.slice(dataUrl.indexOf(',') + 1);
 
+    // Free route: Puter.js (each user signs in to their own free Puter account)
+    let puterReady = null;
+    function loadPuter() {
+      puterReady ??= new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = 'https://js.puter.com/v2/';
+        el.onload = () => resolve(window.puter);
+        el.onerror = () => { puterReady = null; reject(new Error('Could not load Puter')); };
+        document.head.appendChild(el);
+      });
+      return puterReady;
+    }
+
+    async function viaPuter(model) {
+      const puter = await loadPuter();
+      const img = await puter.ai.txt2img(PROMPT, {
+        model,
+        input_images: [photo, drawingData()],
+        ratio: { w: 5, h: 4 },
+      });
+      return img.src;
+    }
+
+    // Own-key route: Gemini REST API
+    async function viaGemini(key, model) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: PROMPT },
+              { inlineData: { mimeType: 'image/jpeg', data: b64(photo) } },
+              { inlineData: { mimeType: 'image/png', data: b64(drawingData()) } },
+            ],
+          }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            imageConfig: { aspectRatio: '5:4' },
+          },
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error?.message || `Request failed (${res.status})`);
+
+      const cand = json.candidates?.[0];
+      const parts = cand?.content?.parts || [];
+      const img = parts.find(p => p.inlineData || p.inline_data);
+      if (!img) {
+        const text = parts.map(p => p.text).filter(Boolean).join(' ');
+        const why = json.promptFeedback?.blockReason || cand?.finishReason;
+        throw new Error(text || (why ? `No image returned (${why})` : 'No image returned'));
+      }
+      const data = img.inlineData || img.inline_data;
+      return `data:${data.mimeType || data.mime_type || 'image/png'};base64,${data.data}`;
+    }
+
+    const errorText = err =>
+      (typeof err === 'string' && err) || err?.message || err?.error?.message || 'Something went wrong';
+
     async function generate() {
       const key = store.get('gemini-key');
-      if (!key) { openSettings(); return; }
       const model = store.get('gemini-model') || DEFAULT_MODEL;
 
       busy = true;
@@ -443,41 +506,12 @@ The result should look like a real, believable photograph, funny because it foll
       showMessage('GENERATING…', true);
 
       try {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: PROMPT },
-                { inlineData: { mimeType: 'image/jpeg', data: b64(photo) } },
-                { inlineData: { mimeType: 'image/png', data: b64(drawingData()) } },
-              ],
-            }],
-            generationConfig: {
-              responseModalities: ['TEXT', 'IMAGE'],
-              imageConfig: { aspectRatio: '5:4' },
-            },
-          }),
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json.error?.message || `Request failed (${res.status})`);
-
-        const cand = json.candidates?.[0];
-        const parts = cand?.content?.parts || [];
-        const img = parts.find(p => p.inlineData || p.inline_data);
-        if (!img) {
-          const text = parts.map(p => p.text).filter(Boolean).join(' ');
-          const why = json.promptFeedback?.blockReason || cand?.finishReason;
-          throw new Error(text || (why ? `No image returned (${why})` : 'No image returned'));
-        }
-        const data = img.inlineData || img.inline_data;
-        $('genImg').src = `data:${data.mimeType || data.mime_type || 'image/png'};base64,${data.data}`;
+        $('genImg').src = key ? await viaGemini(key, model) : await viaPuter(model);
         await $('genImg').decode().catch(() => {});
         showGenerated();
         $('compare').hidden = false;
       } catch (err) {
-        showMessage('COULDN’T GENERATE: ' + err.message, true);
+        showMessage('COULDN’T GENERATE: ' + errorText(err), true);
       } finally {
         busy = false;
         updateGenerate();
@@ -486,6 +520,7 @@ The result should look like a real, believable photograph, funny because it foll
     $('generate').onclick = generate;
 
     redraw();
+    loadPuter().catch(() => {}); // warm up so Generate responds quickly
   </script>
 </body>
 </html>
