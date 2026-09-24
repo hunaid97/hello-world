@@ -183,6 +183,11 @@
       border: 1px solid #fff;
     }
     dialog .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+    .secret { -webkit-text-security: disc; text-security: disc; }
+    .key-state { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; letter-spacing: 0.12em; }
+    .key-state[hidden] { display: none; }
+    .key-state span { margin-right: auto; }
+    .key-state button { padding: 4px 10px; font-size: 11px; }
     .puter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 20px; font-size: 12px; }
     .puter-row span { margin-right: auto; }
     .puter-row button { padding: 6px 10px; font-size: 12px; }
@@ -249,12 +254,19 @@
       <button type="button" id="puterSignOut" hidden>SIGN OUT</button>
     </div>
     <p>
-      Optional: paste your own Gemini API key to call Google directly instead. It is saved in this
-      browser only and sent straight to Google.
+      Optional: paste your own Gemini API key to call Google directly instead. The key is kept in this
+      tab’s memory only — never saved to the browser, the site or anywhere else — and is sent only to
+      Google. Closing or reloading the tab forgets it.
     </p>
     <form method="dialog" id="settingsForm">
       <label for="keyInput">GEMINI API KEY (OPTIONAL)</label>
-      <input id="keyInput" type="password" autocomplete="off" spellcheck="false">
+      <!-- Plain text field masked with CSS so password managers don't offer to save it -->
+      <input id="keyInput" class="secret" type="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other">
+      <div class="key-state" id="keyState" hidden>
+        <span>KEY SET FOR THIS TAB</span>
+        <button type="button" id="forgetKey">FORGET KEY</button>
+      </div>
       <label for="modelInput">MODEL</label>
       <input id="modelInput" type="text" autocomplete="off" spellcheck="false">
       <div class="row">
@@ -264,7 +276,7 @@
     </form>
   </dialog>
 
-  <script>
+  <script type="module">
     const DEFAULT_MODEL = 'gemini-2.5-flash-image';
     const PROMPT = `You are given three images.
 Image 1: a photo of a real person.
@@ -285,11 +297,17 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
     const ctx = canvas.getContext('2d');
     const video = $('cam');
 
-    // ---------- storage (per-browser convenience) ----------
+    // ---------- storage (per-browser convenience; never used for the API key) ----------
     const store = {
       get(k) { try { return localStorage.getItem(k) || ''; } catch { return ''; } },
       set(k, v) { try { localStorage.setItem(k, v); } catch {} },
     };
+
+    // The Gemini key lives only in this module-scoped variable: not in any storage, not on window,
+    // and not reachable from other scripts. Earlier versions saved it, so wipe any old copy.
+    let geminiKey = '';
+    try { localStorage.removeItem('gemini-key'); sessionStorage.removeItem('gemini-key'); } catch {}
+    window.addEventListener('pagehide', () => { geminiKey = ''; });
 
     // ---------- drawing ----------
     let tool = 'pen';
@@ -528,16 +546,24 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
 
     // ---------- settings ----------
     const settings = $('settings');
+    function showKeyState() {
+      $('keyState').hidden = !geminiKey;
+      $('keyInput').placeholder = geminiKey ? 'PASTE A NEW KEY TO REPLACE' : 'PASTE KEY';
+    }
+    $('forgetKey').onclick = () => { geminiKey = ''; showKeyState(); };
     function openSettings() {
-      $('keyInput').value = store.get('gemini-key');
+      $('keyInput').value = '';
+      showKeyState();
       $('modelInput').value = store.get('gemini-model') || DEFAULT_MODEL;
       settings.showModal();
       refreshPuterStatus();
     }
     $('settingsBtn').onclick = openSettings;
     settings.addEventListener('close', () => {
+      const typed = $('keyInput').value.trim();
+      $('keyInput').value = ''; // never leave the key sitting in the field
       if (settings.returnValue !== 'save') return;
-      store.set('gemini-key', $('keyInput').value.trim());
+      if (typed) geminiKey = typed;
       store.set('gemini-model', $('modelInput').value.trim() || DEFAULT_MODEL);
     });
 
@@ -645,7 +671,7 @@ Do not show any magenta lines, sketch lines, text, borders or a side-by-side. Ou
     }
 
     async function generate() {
-      const key = store.get('gemini-key');
+      const key = geminiKey;
       const model = store.get('gemini-model') || DEFAULT_MODEL;
       // Start Puter sign-in right away, while the click still counts as a user gesture
       const signedIn = key ? Promise.resolve() : puterSignIn();
