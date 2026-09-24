@@ -101,6 +101,19 @@
     input[type="range"]::-moz-range-track { height: 1px; background: #fff; }
     input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: none; }
 
+    .flash {
+      position: absolute;
+      left: 50%;
+      top: 16px;
+      transform: translateX(-50%);
+      background: #fff;
+      color: #000;
+      padding: 6px 12px;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      pointer-events: none;
+    }
+    .flash[hidden] { display: none; }
     body.clean .panel, body.clean .faces { display: none; }
     body.clean .stage { padding: 0; }
   </style>
@@ -109,6 +122,7 @@
   <div class="stage">
     <canvas id="view"></canvas>
     <span class="faces" id="faces">FACES: 0</span>
+    <div class="flash" id="flash" hidden></div>
     <div class="msg" id="msg">STARTING CAMERA…</div>
   </div>
 
@@ -126,6 +140,13 @@
       <div class="row" id="shapes">
         <button data-shape="0" aria-pressed="true">BOX</button>
         <button data-shape="1">OVAL</button>
+      </div>
+    </div>
+    <div class="group">
+      <span>GESTURES: ✕ HIDE · THUMBS UP SHOW</span>
+      <div class="row">
+        <button id="gestures" aria-pressed="true">ON</button>
+        <button id="newFaces" title="What happens to someone who just walked in">NEW FACES: HIDDEN</button>
       </div>
     </div>
 
@@ -215,6 +236,17 @@
     // Detections are matched to tracks between frames so boxes glide instead of jumping,
     // and tracks survive short dropouts.
     let tracks = [];
+    // Recently lost faces (or an X made while the face was covered) remember hidden/visible,
+    // so someone who briefly drops out keeps their state when they're found again.
+    let memories = [];
+    function inheritState(d, now) {
+      const cx = d.x + d.w / 2, cy = d.y + d.h / 2;
+      memories = memories.filter(m => m.until > now);
+      const i = memories.findIndex(m => Math.hypot(m.x - cx, m.y - cy) < Math.max(m.w, d.w) * 1.2);
+      if (i < 0) return state.newHidden;
+      const [m] = memories.splice(i, 1);
+      return m.hidden;
+    }
     function updateTracks(detections, now) {
       for (const d of detections) {
         const cx = d.x + d.w / 2, cy = d.y + d.h / 2;
@@ -231,8 +263,11 @@
           best.seen = now;
           best.matched = true;
         } else if (tracks.length < MAX_FACES) {
-          tracks.push({ ...d, seen: now, matched: true });
+          tracks.push({ ...d, seen: now, matched: true, hidden: inheritState(d, now), cooldown: 0 });
         }
+      }
+      for (const t of tracks) {
+        if (now - t.seen >= HOLD_MS) memories.push({ x: t.x + t.w / 2, y: t.y + t.h / 2, w: t.w, hidden: t.hidden, until: now + 2500 });
       }
       tracks = tracks.filter(t => now - t.seen < HOLD_MS);
       tracks.forEach(t => { t.matched = false; });
@@ -254,6 +289,136 @@
       try { return await FaceDetector.createFromOptions(files, opts('GPU')); }
       catch { return await FaceDetector.createFromOptions(files, opts('CPU')); }
     }
+
+    // ---------- gestures ----------
+    let recognizer = null;
+    let poser = null;
+    async function loadPoser() {
+      const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
+      const { PoseLandmarker, FilesetResolver } = await import(`${base}/vision_bundle.mjs`);
+      const files = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+      const opts = delegate => ({
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+          delegate,
+        },
+        runningMode: 'VIDEO',
+        numPoses: MAX_FACES,
+      });
+      try { return await PoseLandmarker.createFromOptions(files, opts('GPU')); }
+      catch { return await PoseLandmarker.createFromOptions(files, opts('CPU')); }
+    }
+    async function loadRecognizer() {
+      const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
+      const { GestureRecognizer, FilesetResolver } = await import(`${base}/vision_bundle.mjs`);
+      const files = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+      const opts = delegate => ({
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task',
+          delegate,
+        },
+        runningMode: 'VIDEO',
+        numHands: 4,
+        minHandDetectionConfidence: 0.4,
+        minHandPresenceConfidence: 0.4,
+      });
+      try { return await GestureRecognizer.createFromOptions(files, opts('GPU')); }
+      catch { return await GestureRecognizer.createFromOptions(files, opts('CPU')); }
+    }
+
+    // Segment intersection; returns the crossing point or null
+    function cross(a, b, c, d) {
+      const r = { x: b.x - a.x, y: b.y - a.y }, q = { x: d.x - c.x, y: d.y - c.y };
+      const den = r.x * q.y - r.y * q.x;
+      if (Math.abs(den) < 1e-6) return null;
+      const t = ((c.x - a.x) * q.y - (c.y - a.y) * q.x) / den;
+      const u = ((c.x - a.x) * r.y - (c.y - a.y) * r.x) / den;
+      return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { x: a.x + r.x * t, y: a.y + r.y * t } : null;
+    }
+
+    // Thumbs up, from the hand-gesture model: [{ kind: 'up', x, y, reach }]
+    function readThumbs(result, W, H) {
+      return result.landmarks.flatMap((lm, i) => {
+        const g = result.gestures[i]?.[0];
+        if (!(g?.categoryName === 'Thumb_Up' && g.score > 0.55)) return [];
+        const c = lm.reduce((a, p) => ({ x: a.x + p.x * W / lm.length, y: a.y + p.y * H / lm.length }), { x: 0, y: 0 });
+        const len = Math.hypot((lm[12].x - lm[0].x) * W, (lm[12].y - lm[0].y) * H);
+        return [{ kind: 'up', x: c.x, y: c.y, reach: Math.max(len * 3, W * 0.12) }];
+      });
+    }
+
+    // X with the forearms, from the pose model: each forearm is elbow -> wrist (a touch longer),
+    // and an X is the two lines crossing. Reported at the person's nose so it lands on their face.
+    function readCrosses(result, W, H) {
+      return result.landmarks.flatMap(lm => {
+        const P = j => ({ x: lm[j].x * W, y: lm[j].y * H });
+        const ok = j => (lm[j].visibility ?? 1) > 0.5;
+        if (![13, 14, 15, 16].every(ok)) return [];
+        const arm = (e, w) => {
+          const E = P(e), Wr = P(w);
+          return [E, { x: Wr.x + (Wr.x - E.x) * 0.25, y: Wr.y + (Wr.y - E.y) * 0.25 }];
+        };
+        const [a1, a2] = arm(13, 15), [b1, b2] = arm(14, 16);
+        if (!cross(a1, a2, b1, b2)) return [];
+        const nose = P(0);
+        const reach = Math.max(Math.hypot(a2.x - a1.x, a2.y - a1.y), W * 0.12);
+        return [{ kind: 'x', x: nose.x, y: nose.y, reach }];
+      });
+    }
+
+    // A gesture has to be held ~¼ s before it counts; then that face can't flip again for a moment
+    const HOLD_GESTURE_MS = 250, COOLDOWN_MS = 1200;
+    const pending = { x: [], up: [] };
+    function applyGestures(kind, gs, now) {
+      const next = [];
+      for (const g of gs) {
+        const prev = pending[kind].find(p => Math.hypot(p.x - g.x, p.y - g.y) < g.reach);
+        next.push({ ...g, since: prev ? prev.since : now, fired: prev?.fired });
+      }
+      pending[kind] = next;
+      for (const g of next) {
+        if (g.fired || now - g.since < HOLD_GESTURE_MS) continue;
+        g.fired = true;
+        const hide = g.kind === 'x';
+        // The nearest face within reach of the gesture
+        let face = null, best = Infinity;
+        for (const t of tracks) {
+          const dist = Math.hypot(t.x + t.w / 2 - g.x, t.y + t.h / 2 - g.y);
+          if (dist < Math.max(g.reach, t.w * 2.5) && dist < best) { face = t; best = dist; }
+        }
+        if (face) {
+          if (now < face.cooldown) continue;
+          face.hidden = hide;
+          face.cooldown = now + COOLDOWN_MS;
+        } else if (hide) {
+          // Arms crossed over a face the detector can't see right now: remember it for when it reappears
+          memories.push({ x: g.x, y: g.y, w: g.reach, hidden: true, until: now + 3000 });
+        } else continue;
+        flash(hide ? '✕ HIDDEN' : 'VISIBLE');
+      }
+    }
+
+    let flashTimer = 0;
+    function flash(text) {
+      $('flash').textContent = text;
+      $('flash').hidden = false;
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => { $('flash').hidden = true; }, 1000);
+    }
+
+    state.gestures = true;
+    state.newHidden = true;
+    $('gestures').onclick = () => {
+      state.gestures = !state.gestures;
+      $('gestures').setAttribute('aria-pressed', String(state.gestures));
+      $('gestures').textContent = state.gestures ? 'ON' : 'OFF';
+      // Turning gestures off goes back to hiding everyone
+      if (!state.gestures) tracks.forEach(t => { t.hidden = true; });
+    };
+    $('newFaces').onclick = () => {
+      state.newHidden = !state.newHidden;
+      $('newFaces').textContent = 'NEW FACES: ' + (state.newHidden ? 'HIDDEN' : 'VISIBLE');
+    };
 
     // ---------- WebGPU ----------
     const WGSL = `
@@ -369,8 +534,10 @@
       const W = video.videoWidth, H = video.videoHeight;
       const pad = $('pad').value / 100;
       uniforms.set([W, H, +$('pw').value, +$('ph').value, $('noise').value / 100, +$('levels').value,
-                    state.mode, state.shape, now / 1000, tracks.length, 0, 0]);
-      tracks.forEach((t, i) => {
+                    state.mode, state.shape, now / 1000, 0, 0, 0]);
+      const masked = tracks.filter(t => t.hidden || !state.gestures);
+      uniforms[9] = masked.length;
+      masked.forEach((t, i) => {
         // Padding grows the box, a little more upwards to cover hair and forehead
         const px = t.w * pad * 0.5, py = t.h * pad * 0.5;
         uniforms.set([t.x - px, t.y - py * 1.6, t.x + t.w + px, t.y + t.h + py * 0.8], 12 + i * 4);
@@ -398,6 +565,7 @@
 
     // ---------- loop ----------
     let lastVideoTime = -1;
+    let frame = 0;
     function loop(now) {
       requestAnimationFrame(loop);
       // Nothing is shown until face detection is ready, so no face is ever visible unpixelated
@@ -408,7 +576,14 @@
           x: d.boundingBox.originX, y: d.boundingBox.originY, w: d.boundingBox.width, h: d.boundingBox.height,
         }));
         updateTracks(found, now);
-        $('faces').textContent = 'FACES: ' + tracks.length;
+        if (state.gestures) {
+          // Alternate the two models between frames to keep the frame rate up
+          const W = video.videoWidth, H = video.videoHeight;
+          if (frame++ % 2 === 0) { if (poser) applyGestures('x', readCrosses(poser.detectForVideo(video, now), W, H), now); }
+          else if (recognizer) applyGestures('up', readThumbs(recognizer.recognizeForVideo(video, now), W, H), now);
+        }
+        const hiddenCount = tracks.filter(t => t.hidden || !state.gestures).length;
+        $('faces').textContent = `FACES: ${tracks.length} · HIDDEN: ${hiddenCount}`;
       }
       render(now);
     }
@@ -424,6 +599,9 @@
       requestAnimationFrame(loop);
       detector = await loadDetector();
       msg('');
+      // Gestures load after faces are already protected
+      loadPoser().then(r => { poser = r; }).catch(() => flash('X GESTURE UNAVAILABLE'));
+      loadRecognizer().then(r => { recognizer = r; }).catch(() => flash('THUMBS UP UNAVAILABLE'));
     } catch (err) {
       msg(err.message.toUpperCase());
     }
