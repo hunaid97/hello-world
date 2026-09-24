@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:fitsSystemWindows="true">
+
+    <ScrollView
+        android:id="@+id/main_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <TextView
+                style="@style/Label"
+                android:text="GLYPH STORIES"
+                android:textSize="22sp" />
+
+            <com.hunaid.glyphstories.MatrixPreviewView
+                android:id="@+id/preview"
+                android:layout_width="180dp"
+                android:layout_height="180dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="20dp"
+                android:layout_marginBottom="12dp" />
+
+            <TextView
+                android:id="@+id/status"
+                style="@style/Body"
+                android:gravity="center"
+                android:text="READY" />
+
+            <Button
+                android:id="@+id/arm"
+                style="@style/SharpButton"
+                android:layout_marginTop="20dp"
+                android:text="SHAKE READER: OFF" />
+
+            <Button
+                android:id="@+id/play"
+                style="@style/SharpButton"
+                android:text="PLAY ON GLYPH NOW" />
+
+            <Button
+                android:id="@+id/locked"
+                style="@style/SharpButton"
+                android:text="ONLY WHEN LOCKED: ON" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/Label"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="READING SPEED" />
+
+                <TextView
+                    android:id="@+id/speed_value"
+                    style="@style/Label"
+                    android:text="8" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/speed"
+                android:layout_width="match_parent"
+                android:layout_height="32dp"
+                android:layout_marginTop="8dp"
+                android:max="20"
+                android:min="1"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:progressDrawable="@drawable/seek_track"
+                android:splitTrack="false"
+                android:thumb="@drawable/seek_thumb" />
+
+            <TextView
+                style="@style/Label"
+                android:layout_marginTop="24dp"
+                android:text="NOW READING" />
+
+            <TextView
+                android:id="@+id/current"
+                style="@style/Body"
+                android:layout_marginTop="6dp"
+                android:text="NOTHING YET" />
+
+            <Button
+                android:id="@+id/fetch"
+                style="@style/SharpButton"
+                android:layout_marginTop="16dp"
+                android:text="FETCH A RANDOM STORY" />
+
+            <TextView
+                style="@style/Label"
+                android:layout_marginTop="24dp"
+                android:text="LIBRARY" />
+
+            <LinearLayout
+                android:id="@+id/library"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
+
+            <TextView
+                style="@style/Body"
+                android:layout_marginTop="28dp"
+                android:alpha="0.7"
+                android:text="TURN ON THE SHAKE READER, LOCK YOUR PHONE, THEN SHAKE IT TO START THE STORY ON THE GLYPH MATRIX. SHAKE AGAIN TO STOP. NEXT TIME IT PICKS UP 10 WORDS BEFORE WHERE YOU STOPPED." />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Full-screen reader for reading a story on the phone itself -->
+    <LinearLayout
+        android:id="@+id/reader"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/reader_title"
+            style="@style/Label"
+            android:textSize="18sp" />
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="16dp"
+            android:layout_weight="1">
+
+            <TextView
+                android:id="@+id/reader_text"
+                style="@style/Body"
+                android:lineSpacingExtra="6dp"
+                android:textIsSelectable="true"
+                android:textSize="15sp" />
+        </ScrollView>
+
+        <Button
+            android:id="@+id/reader_close"
+            style="@style/SharpButton"
+            android:text="CLOSE" />
+    </LinearLayout>
+</FrameLayout>

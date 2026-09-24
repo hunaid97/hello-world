@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Glyph Stories</title>
+  <style>
+    * { box-sizing: border-box; border-radius: 0; }
+    body { margin: 0; background: #000; color: #fff; font-family: ui-monospace, Menlo, monospace; font-size: 14px; line-height: 1.6; padding: 40px 16px; }
+    main { max-width: 560px; margin: 0 auto; }
+    h1 { font-size: 20px; font-weight: 500; letter-spacing: 0.12em; margin: 0 0 8px; }
+    h2 { font-size: 12px; font-weight: 500; letter-spacing: 0.14em; margin: 32px 0 8px; }
+    p, li { margin: 0 0 8px; }
+    ol { padding-left: 20px; margin: 0; }
+    a.btn { display: block; text-align: center; margin: 24px 0 8px; padding: 14px; border: 1px solid #fff; color: #000; background: #fff; text-decoration: none; letter-spacing: 0.12em; }
+    a.btn:hover { background: #000; color: #fff; }
+    code { display: block; border: 1px solid #fff; padding: 10px 12px; margin: 6px 0 12px; white-space: pre-wrap; word-break: break-all; }
+    .dim { opacity: 0.7; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>GLYPH STORIES</h1>
+    <p>Fetches random stories to read and keep. Lock your Nothing Phone (4a) Pro and shake it: the story scrolls right to left across the 13×13 Glyph Matrix on the back. Shake again to stop — next time it picks up 10 words before where you stopped.</p>
+
+    <a class="btn" href="glyph-stories.apk" download>DOWNLOAD APK</a>
+    <p class="dim">v1.0 · 64 KB · Android 13+ · SHA-256 6e47a5f8a6a2237004815c38583920c87278b0aa3ed2309b5e6305ec5b63f951</p>
+
+    <h2>INSTALL FROM YOUR MAC (USB DEBUGGING)</h2>
+    <code>curl -LO https://hunaid97.github.io/hello-world/workshop/glyph-stories/glyph-stories.apk
+adb install -r glyph-stories.apk</code>
+    <p>Or open this page on the phone, tap DOWNLOAD APK and allow installing from your browser.</p>
+
+    <h2>IF THE MATRIX STAYS DARK</h2>
+    <p>Turn on Nothing's Glyph developer mode (lasts 48 hours):</p>
+    <code>adb shell settings put global nt_glyph_interface_debug_enable 1</code>
+
+    <h2>USING IT</h2>
+    <ol>
+      <li>Open the app. It fetches a first story; FETCH A RANDOM STORY gets more. Tap one in the library to make it current.</li>
+      <li>Set READING SPEED, then turn SHAKE READER on.</li>
+      <li>Lock the phone and shake it: two firm shakes. A short buzz means it started, a double buzz means it stopped.</li>
+      <li>PLAY ON GLYPH NOW tries it without locking.</li>
+    </ol>
+  </main>
+</body>
+</html>

@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.hunaid.glyphstories'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.hunaid.glyphstories'
+        minSdk 33          // Glyph Matrix SDK requires 33+
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Signed with the debug key so it installs straight away without a keystore
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation files('libs/glyph-matrix-sdk-2.0.aar')
+}
