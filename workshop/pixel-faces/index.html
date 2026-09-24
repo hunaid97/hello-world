@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pixel Faces</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; border-radius: 0; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: 'IBM Plex Mono', ui-monospace, monospace;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      overflow: hidden;
+    }
+    body { display: flex; flex-direction: column; }
+
+    .stage {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      position: relative;
+    }
+    canvas { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; background: #000; }
+    .msg {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 16px;
+      text-align: center;
+      font-size: 14px;
+      letter-spacing: 0.12em;
+      pointer-events: none;
+    }
+    .msg[hidden] { display: none; }
+    .faces {
+      position: absolute;
+      left: 16px;
+      top: 16px;
+      background: #000;
+      padding: 2px 6px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+    }
+
+    /* Controls */
+    .panel {
+      border-top: 1px solid #fff;
+      padding: 14px 16px 18px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 18px 28px;
+    }
+    .group { display: flex; flex-direction: column; gap: 8px; }
+    .group > span { font-size: 10px; letter-spacing: 0.14em; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .push { margin-left: auto; }
+
+    button {
+      font: inherit;
+      letter-spacing: inherit;
+      padding: 6px 12px;
+      background: #000;
+      color: #fff;
+      border: 1px solid #fff;
+      cursor: pointer;
+    }
+    button:hover, button[aria-pressed="true"] { background: #fff; color: #000; }
+    button:focus-visible, input:focus-visible { outline: 1px solid #fff; outline-offset: 3px; }
+
+    .slider { display: flex; flex-direction: column; gap: 6px; width: 150px; }
+    .slider label { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: 0.14em; }
+    input[type="range"] {
+      width: 100%;
+      margin: 0;
+      height: 18px;
+      background: transparent;
+      -webkit-appearance: none;
+      appearance: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-runnable-track { height: 1px; background: #fff; }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 12px;
+      height: 12px;
+      margin-top: -5.5px;
+      background: #fff;
+      border: none;
+    }
+    input[type="range"]::-moz-range-track { height: 1px; background: #fff; }
+    input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: none; }
+
+    body.clean .panel, body.clean .faces { display: none; }
+    body.clean .stage { padding: 0; }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <canvas id="view"></canvas>
+    <span class="faces" id="faces">FACES: 0</span>
+    <div class="msg" id="msg">STARTING CAMERA…</div>
+  </div>
+
+  <div class="panel">
+    <div class="group">
+      <span>MODE</span>
+      <div class="row" id="modes">
+        <button data-mode="0" aria-pressed="true">BLOCKS</button>
+        <button data-mode="1">MONO</button>
+        <button data-mode="2">GLITCH</button>
+      </div>
+    </div>
+    <div class="group">
+      <span>SHAPE</span>
+      <div class="row" id="shapes">
+        <button data-shape="0" aria-pressed="true">BOX</button>
+        <button data-shape="1">OVAL</button>
+      </div>
+    </div>
+
+    <div class="slider">
+      <label for="pw">PIXEL WIDTH <output id="pwOut"></output></label>
+      <input id="pw" type="range" min="2" max="160" value="24">
+    </div>
+    <div class="slider">
+      <label for="ph">PIXEL HEIGHT <output id="phOut"></output></label>
+      <input id="ph" type="range" min="2" max="160" value="24">
+    </div>
+    <div class="group">
+      <span>X / Y</span>
+      <button id="lock" aria-pressed="true">LOCKED</button>
+    </div>
+    <div class="slider">
+      <label for="noise">NOISE <output id="noiseOut"></output></label>
+      <input id="noise" type="range" min="0" max="100" value="0">
+    </div>
+    <div class="slider">
+      <label for="levels">COLOURS <output id="levelsOut"></output></label>
+      <input id="levels" type="range" min="2" max="33" value="33">
+    </div>
+    <div class="slider">
+      <label for="pad">PADDING <output id="padOut"></output></label>
+      <input id="pad" type="range" min="0" max="100" value="35">
+    </div>
+
+    <div class="group push">
+      <span>VIEW</span>
+      <div class="row">
+        <button id="clean" title="Hide the controls (H)">HIDE UI</button>
+        <button id="full">FULLSCREEN</button>
+      </div>
+    </div>
+  </div>
+
+  <video id="cam" autoplay playsinline muted hidden></video>
+
+  <script type="module">
+    const $ = id => document.getElementById(id);
+    const video = $('cam');
+    const canvas = $('view');
+    const msg = text => { $('msg').textContent = text; $('msg').hidden = !text; };
+
+    const MAX_FACES = 8;
+    const HOLD_MS = 400; // keep pixelating a lost face this long so it never flashes through
+
+    // ---------- controls ----------
+    const state = { mode: 0, shape: 0, locked: true };
+    function pick(groupId, key) {
+      $(groupId).querySelectorAll('button').forEach(b => b.onclick = () => {
+        state[key] = +b.dataset[key];
+        $(groupId).querySelectorAll('button').forEach(o => o.setAttribute('aria-pressed', String(o === b)));
+      });
+    }
+    pick('modes', 'mode');
+    pick('shapes', 'shape');
+
+    const outputs = {
+      pw: v => v + 'PX', ph: v => v + 'PX', noise: v => v + '%',
+      levels: v => (+v >= 33 ? 'FULL' : v), pad: v => v + '%',
+    };
+    function syncOutputs() {
+      for (const [id, fmt] of Object.entries(outputs)) $(id + 'Out').textContent = fmt($(id).value);
+    }
+    $('pw').addEventListener('input', () => { if (state.locked) $('ph').value = $('pw').value; syncOutputs(); });
+    $('ph').addEventListener('input', () => { if (state.locked) $('pw').value = $('ph').value; syncOutputs(); });
+    ['noise', 'levels', 'pad'].forEach(id => $(id).addEventListener('input', syncOutputs));
+    $('lock').onclick = () => {
+      state.locked = !state.locked;
+      $('lock').setAttribute('aria-pressed', String(state.locked));
+      $('lock').textContent = state.locked ? 'LOCKED' : 'FREE';
+      if (state.locked) { $('ph').value = $('pw').value; syncOutputs(); }
+    };
+    syncOutputs();
+
+    const toggleClean = () => document.body.classList.toggle('clean');
+    $('clean').onclick = toggleClean;
+    $('full').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+    document.addEventListener('keydown', e => {
+      if (e.key === 'h' || e.key === 'H') toggleClean();
+      if (e.key === 'Escape') document.body.classList.remove('clean');
+    });
+
+    // ---------- face tracking ----------
+    // Detections are matched to tracks between frames so boxes glide instead of jumping,
+    // and tracks survive short dropouts.
+    let tracks = [];
+    function updateTracks(detections, now) {
+      for (const d of detections) {
+        const cx = d.x + d.w / 2, cy = d.y + d.h / 2;
+        let best = null, bestDist = Infinity;
+        for (const t of tracks) {
+          if (t.matched) continue;
+          const dist = Math.hypot(t.x + t.w / 2 - cx, t.y + t.h / 2 - cy);
+          if (dist < Math.max(t.w, d.w) && dist < bestDist) { best = t; bestDist = dist; }
+        }
+        if (best) {
+          const k = 0.6;
+          best.x += (d.x - best.x) * k; best.y += (d.y - best.y) * k;
+          best.w += (d.w - best.w) * k; best.h += (d.h - best.h) * k;
+          best.seen = now;
+          best.matched = true;
+        } else if (tracks.length < MAX_FACES) {
+          tracks.push({ ...d, seen: now, matched: true });
+        }
+      }
+      tracks = tracks.filter(t => now - t.seen < HOLD_MS);
+      tracks.forEach(t => { t.matched = false; });
+    }
+
+    let detector = null;
+    async function loadDetector() {
+      const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
+      const { FaceDetector, FilesetResolver } = await import(`${base}/vision_bundle.mjs`);
+      const files = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+      const opts = delegate => ({
+        baseOptions: {
+          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite',
+          delegate,
+        },
+        runningMode: 'VIDEO',
+        minDetectionConfidence: 0.4,
+      });
+      try { return await FaceDetector.createFromOptions(files, opts('GPU')); }
+      catch { return await FaceDetector.createFromOptions(files, opts('CPU')); }
+    }
+
+    // ---------- WebGPU ----------
+    const WGSL = `
+      struct U {
+        res: vec2f,
+        pix: vec2f,
+        noise: f32,
+        levels: f32,
+        mode: f32,
+        shape: f32,
+        time: f32,
+        count: f32,
+        _pad: vec2f,
+        rects: array<vec4f, ${MAX_FACES}>,
+      };
+      @group(0) @binding(0) var samp: sampler;
+      @group(0) @binding(1) var vid: texture_external;
+      @group(0) @binding(2) var<uniform> u: U;
+
+      @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+        var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+        return vec4f(p[i], 0.0, 1.0);
+      }
+
+      fn hash(p: vec3f) -> f32 {
+        return fract(sin(dot(p, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
+      }
+
+      fn sampleAt(p: vec2f) -> vec3f {
+        return textureSampleBaseClampToEdge(vid, samp, p / u.res).rgb;
+      }
+
+      // Is this cell centre inside any face region? (box, or ellipse inscribed in the box)
+      fn inRegion(c: vec2f) -> bool {
+        for (var i = 0u; i < u32(u.count); i++) {
+          let r = u.rects[i];
+          if (u.shape < 0.5) {
+            if (c.x >= r.x && c.x <= r.z && c.y >= r.y && c.y <= r.w) { return true; }
+          } else {
+            let mid = (r.xy + r.zw) * 0.5;
+            let half = max((r.zw - r.xy) * 0.5, vec2f(1.0));
+            let q = (c - mid) / half;
+            if (dot(q, q) <= 1.0) { return true; }
+          }
+        }
+        return false;
+      }
+
+      @fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+        // Mirrored like a selfie camera; video pixel coordinates, top-left origin
+        let p = vec2f(u.res.x - pos.x, pos.y);
+        // Global grid so blocks stay put while faces move
+        let cell = floor(p / u.pix);
+        let centre = (cell + 0.5) * u.pix;
+        if (!inRegion(centre)) {
+          return vec4f(sampleAt(p), 1.0);
+        }
+
+        let tick = floor(u.time * 24.0);
+        var sp = centre;
+        if (u.mode > 1.5) {
+          // Glitch: whole rows of blocks jump sideways
+          let jump = hash(vec3f(7.0, cell.y, floor(u.time * 10.0))) - 0.5;
+          sp.x += jump * (0.15 + u.noise) * u.pix.x * 6.0;
+        }
+
+        // Average a 3x3 grid of samples inside the block
+        var col = vec3f(0.0);
+        for (var j = 0; j < 3; j++) {
+          for (var i = 0; i < 3; i++) {
+            col += sampleAt(sp + (vec2f(f32(i), f32(j)) - 1.0) * u.pix / 3.0);
+          }
+        }
+        col /= 9.0;
+
+        let n = (hash(vec3f(cell, tick)) - 0.5) * u.noise;
+        let steps = max(u.levels - 1.0, 1.0);
+        if (u.mode > 0.5 && u.mode < 1.5) {
+          // Mono: grey blocks; COLOURS sets how many greys (2 = pure black and white)
+          var l = dot(col, vec3f(0.299, 0.587, 0.114)) + n;
+          if (u.levels < 33.0) { l = floor(clamp(l, 0.0, 1.0) * steps + 0.5) / steps; }
+          col = vec3f(l);
+        } else {
+          col += vec3f(n);
+          if (u.levels < 33.0) { col = floor(clamp(col, vec3f(0.0), vec3f(1.0)) * steps + 0.5) / steps; }
+        }
+        return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 1.0);
+      }`;
+
+    let gpu = null;
+    async function initGpu() {
+      const adapter = await navigator.gpu?.requestAdapter();
+      const device = await adapter?.requestDevice();
+      if (!device) return null;
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      const ctx = canvas.getContext('webgpu');
+      ctx.configure({ device, format, alphaMode: 'opaque' });
+      const module = device.createShaderModule({ code: WGSL });
+      const pipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+      const ubuf = device.createBuffer({ size: 48 + 16 * MAX_FACES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      return { device, ctx, pipeline, sampler, ubuf };
+    }
+
+    const uniforms = new Float32Array(12 + 4 * MAX_FACES);
+    function render(now) {
+      const { device, ctx, pipeline, sampler, ubuf } = gpu;
+      const W = video.videoWidth, H = video.videoHeight;
+      const pad = $('pad').value / 100;
+      uniforms.set([W, H, +$('pw').value, +$('ph').value, $('noise').value / 100, +$('levels').value,
+                    state.mode, state.shape, now / 1000, tracks.length, 0, 0]);
+      tracks.forEach((t, i) => {
+        // Padding grows the box, a little more upwards to cover hair and forehead
+        const px = t.w * pad * 0.5, py = t.h * pad * 0.5;
+        uniforms.set([t.x - px, t.y - py * 1.6, t.x + t.w + px, t.y + t.h + py * 0.8], 12 + i * 4);
+      });
+      device.queue.writeBuffer(ubuf, 0, uniforms);
+
+      const bind = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: device.importExternalTexture({ source: video }) },
+          { binding: 2, resource: { buffer: ubuf } },
+        ],
+      });
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginRenderPass({
+        colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bind);
+      pass.draw(3);
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    }
+
+    // ---------- loop ----------
+    let lastVideoTime = -1;
+    function loop(now) {
+      requestAnimationFrame(loop);
+      // Nothing is shown until face detection is ready, so no face is ever visible unpixelated
+      if (video.readyState < 2 || !detector) return;
+      if (detector && video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const found = detector.detectForVideo(video, now).detections.map(d => ({
+          x: d.boundingBox.originX, y: d.boundingBox.originY, w: d.boundingBox.width, h: d.boundingBox.height,
+        }));
+        updateTracks(found, now);
+        $('faces').textContent = 'FACES: ' + tracks.length;
+      }
+      render(now);
+    }
+
+    try {
+      gpu = await initGpu();
+      if (!gpu) throw new Error('This needs WebGPU. Try the latest Chrome, Edge or Safari.');
+      video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      await video.play();
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      msg('LOADING FACE DETECTION…');
+      requestAnimationFrame(loop);
+      detector = await loadDetector();
+      msg('');
+    } catch (err) {
+      msg(err.message.toUpperCase());
+    }
+  </script>
+</body>
+</html>
