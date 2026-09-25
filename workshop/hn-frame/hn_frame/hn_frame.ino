@@ -223,22 +223,36 @@ void led(bool on) {
   digitalWrite(PIN_LED, on ? LOW : HIGH);
 }
 
+// A detent: 3 ms at 4.5 kHz is too short to hear as a pitch, so it reads as a click.
+void tick() {
+  buzz(4500);
+  vTaskDelay(pdMS_TO_TICKS(3));
+  buzz(0);
+}
+
+// A mechanical shutter, "ka-chk": a sharp click as it opens, then a lower double clack as
+// it closes.
+void shutter() {
+  buzz(4200); vTaskDelay(pdMS_TO_TICKS(6));
+  buzz(0);    vTaskDelay(pdMS_TO_TICKS(70));
+  buzz(2200); vTaskDelay(pdMS_TO_TICKS(10));
+  buzz(1500); vTaskDelay(pdMS_TO_TICKS(14));
+  buzz(0);
+}
+
 void ledLoop(void *) {
   uint32_t pattern;
   while (true) {
     xTaskNotifyWait(0, 0xffffffff, &pattern, portMAX_DELAY);
     if (pattern == BLINK_CW) {
-      led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false);
+      led(true); tick(); vTaskDelay(pdMS_TO_TICKS(27)); led(false);
     } else if (pattern == BLINK_CCW) {
-      led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false); vTaskDelay(pdMS_TO_TICKS(70));
+      led(true); tick(); vTaskDelay(pdMS_TO_TICKS(27)); led(false); vTaskDelay(pdMS_TO_TICKS(70));
       led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false);
     } else if (pattern == BLINK_PRESS) {
-      // Shutter: a high tick and a lower clack, with the LED on throughout.
       led(true);
-      buzz(2600); vTaskDelay(pdMS_TO_TICKS(25));
-      buzz(0);    vTaskDelay(pdMS_TO_TICKS(15));
-      buzz(1700); vTaskDelay(pdMS_TO_TICKS(45));
-      buzz(0);    vTaskDelay(pdMS_TO_TICKS(215));
+      shutter();
+      vTaskDelay(pdMS_TO_TICKS(200));
       led(false);
     }
   }
