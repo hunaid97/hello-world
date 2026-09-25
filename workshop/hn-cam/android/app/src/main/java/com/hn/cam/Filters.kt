@@ -15,10 +15,13 @@ import android.hardware.HardwareBuffer
 import android.media.ImageReader
 
 /**
- * A filter is an AGSL shader, run on the GPU as one RenderEffect pass. It reads what's
+ * A filter is usually an AGSL shader, run on the GPU as one RenderEffect pass. It reads what's
  * underneath from `uniform shader image` in pixel coordinates of an image [FilterInputs.width]
  * wide, and sets its own uniforms in [uniforms], relative to that size, so the live view and
  * the saved photo look the same.
+ *
+ * A few effects can't be done per pixel (sorting needs a whole column at once); those set
+ * [cpu] instead and run on the bitmap before any GPU pass.
  *
  * Any set of filters can be on at once; they always stack in [stage] order.
  * To add one: write the shader, add a Filter to [FILTERS].
@@ -26,9 +29,21 @@ import android.media.ImageReader
 class Filter(
     val name: String,
     val stage: Int,
-    val agsl: String,
-    val uniforms: RuntimeShader.(FilterInputs) -> Unit,
+    val agsl: String?,
+    val uniforms: RuntimeShader.(FilterInputs) -> Unit = {},
+    val cpu: ((Bitmap) -> Bitmap)? = null,
 )
+
+/** Runs the CPU filters among [active] over [src], scaled down to [maxWidth] first if given. */
+fun applyCpuFilters(active: Collection<Filter>, src: Bitmap, maxWidth: Int = Int.MAX_VALUE): Bitmap {
+    val cpu = active.filter { it.cpu != null }.sortedBy { it.stage }
+    if (cpu.isEmpty()) return src
+    var bmp = if (src.width > maxWidth) {
+        Bitmap.createScaledBitmap(src, maxWidth, src.height * maxWidth / src.width, true)
+    } else src
+    for (f in cpu) bmp = f.cpu!!(bmp)
+    return bmp
+}
 
 /** What a filter can read besides the image itself. */
 class FilterInputs(
@@ -46,8 +61,8 @@ class FilterInputs(
  */
 fun buildEffect(active: Collection<Filter>, inputs: FilterInputs, shaders: MutableMap<Filter, RuntimeShader>): RenderEffect? {
     var effect: RenderEffect? = null
-    for (f in active.sortedBy { it.stage }) {
-        val s = shaders.getOrPut(f) { RuntimeShader(f.agsl) }
+    for (f in active.filter { it.agsl != null }.sortedBy { it.stage }) {
+        val s = shaders.getOrPut(f) { RuntimeShader(f.agsl!!) }
         f.uniforms(s, inputs)
         val pass = RenderEffect.createRuntimeShaderEffect(s, "image")
         // createChainEffect(outer, inner): inner runs first.
@@ -130,36 +145,33 @@ half4 main(float2 p) {
 }
 """
 
-// Thermal camera: soft brightness mapped onto black, violet, red, orange, yellow, white.
+// Thermal camera, full rainbow: black, deep blue, cyan, green, yellow, orange, red, magenta, white.
 private const val HEAT = COMMON + """
 half3 palette(half t) {
-    half3 c = mix(half3(0.0), half3(0.25, 0.0, 0.55), smoothstep(0.0, 0.2, t));
-    c = mix(c, half3(0.85, 0.0, 0.55), smoothstep(0.2, 0.4, t));
-    c = mix(c, half3(1.0, 0.25, 0.0), smoothstep(0.4, 0.6, t));
-    c = mix(c, half3(1.0, 0.75, 0.0), smoothstep(0.6, 0.8, t));
-    return mix(c, half3(1.0, 1.0, 0.85), smoothstep(0.8, 1.0, t));
+    half3 c = mix(half3(0.0), half3(0.05, 0.0, 0.6), smoothstep(0.0, 0.12, t));
+    c = mix(c, half3(0.0, 0.85, 1.0), smoothstep(0.12, 0.3, t));
+    c = mix(c, half3(0.1, 1.0, 0.2), smoothstep(0.3, 0.45, t));
+    c = mix(c, half3(1.0, 1.0, 0.0), smoothstep(0.45, 0.6, t));
+    c = mix(c, half3(1.0, 0.5, 0.0), smoothstep(0.6, 0.72, t));
+    c = mix(c, half3(1.0, 0.0, 0.1), smoothstep(0.72, 0.84, t));
+    c = mix(c, half3(1.0, 0.0, 0.9), smoothstep(0.84, 0.93, t));
+    return mix(c, half3(1.0), smoothstep(0.93, 1.0, t));
 }
 
 half4 main(float2 p) {
     float d = size.x / 160.0;
     half t = (luma(at(p)) * 2.0 + luma(at(p + float2(d, 0))) + luma(at(p - float2(d, 0)))
             + luma(at(p + float2(0, d))) + luma(at(p - float2(0, d)))) / 6.0;
-    return half4(palette(t), 1.0);
+    // Stretch the contrast so a normal scene spans more of the palette.
+    return half4(palette(smoothstep(0.1, 0.85, t)), 1.0);
 }
 """
 
-// Square blocks, each the true average of a 4x4 grid of samples inside it.
-private const val PIXEL_AVG = COMMON + """
+// Classic pixelation: square blocks, each one crisp colour taken from its centre.
+private const val PIXELATE = COMMON + """
 half4 main(float2 p) {
-    float block = size.x / 40.0;
-    float2 origin = floor(p / block) * block;
-    half3 sum = half3(0.0);
-    for (int y = 0; y < 4; y++) {
-        for (int x = 0; x < 4; x++) {
-            sum += at(origin + block * (float2(float(x), float(y)) + 0.5) / 4.0);
-        }
-    }
-    return half4(sum / 16.0, 1.0);
+    float block = size.x / 32.0;
+    return half4(at((floor(p / block) + 0.5) * block), 1.0);
 }
 """
 
@@ -180,15 +192,26 @@ half4 main(float2 p) {
 }
 """
 
-// A slow liquid warp, a soft glow and pastel colour drifting across the frame.
+// Flowing two-layer warp, a slow swirl around a drifting centre, colour fringes along the
+// warp, then a soft glow and pastel colour drifting across the frame.
 private const val DREAMSCAPE = COMMON + """
 uniform float time;
 
 half4 main(float2 p) {
     float2 uv = p / size;
-    float2 warp = float2(sin(uv.y * 6.0 + time * 0.8), cos(uv.x * 5.0 + time * 0.6)) * size.x * 0.01;
-    float2 q = p + warp;
-    half3 c = at(q);
+    float2 flow = float2(sin(uv.y * 5.0 + time * 0.7) + 0.5 * sin(uv.y * 13.0 - time * 1.3),
+                         cos(uv.x * 4.0 + time * 0.5) + 0.5 * cos(uv.x * 11.0 + time * 1.1)) * size.x * 0.02;
+
+    float2 centre = size * float2(0.5 + 0.25 * sin(time * 0.3), 0.5 + 0.2 * cos(time * 0.4));
+    float2 d = p - centre;
+    float fall = max(0.0, 1.0 - length(d) / (size.x * 0.5));
+    float angle = 1.6 * fall * fall * sin(time * 0.45);
+    float sn = sin(angle);
+    float cs = cos(angle);
+    float2 q = centre + float2(d.x * cs - d.y * sn, d.x * sn + d.y * cs) + flow;
+
+    float2 split = flow * 0.4;
+    half3 c = half3(at(q + split).r, at(q).g, at(q - split).b);
 
     half3 glow = half3(0.0);
     float r = size.x * 0.025;
@@ -205,37 +228,118 @@ half4 main(float2 p) {
 }
 """
 
-// A lattice of triangles, each filled with the colour at its centre, with faint seams.
+// Squares of one flat colour each. Start big; wherever a square covers too much contrast,
+// split it into four, up to four times. Flat areas stay as large squares, detail gets small ones.
 private const val GEOMETRIC = COMMON + """
+half3 average(float2 o, float s) {
+    return (at(o + s * float2(0.25, 0.25)) + at(o + s * float2(0.75, 0.25))
+          + at(o + s * float2(0.25, 0.75)) + at(o + s * float2(0.75, 0.75))) * 0.25;
+}
+
+half spread(float2 o, float s) {
+    half a = luma(at(o + s * float2(0.2, 0.2)));
+    half b = luma(at(o + s * float2(0.8, 0.2)));
+    half c = luma(at(o + s * float2(0.2, 0.8)));
+    half d = luma(at(o + s * float2(0.8, 0.8)));
+    half e = luma(at(o + s * float2(0.5, 0.5)));
+    return max(max(max(a, b), max(c, d)), e) - min(min(min(a, b), min(c, d)), e);
+}
+
 half4 main(float2 p) {
-    float s = size.x / 24.0;
-    float2 cell = floor(p / s);
-    float2 f = fract(p / s);
-    bool flip = mod(cell.x + cell.y, 2.0) > 0.5;
-    float2 centre;
-    float diagonal;
-    if (flip) {
-        centre = (f.x + f.y < 1.0) ? float2(1.0 / 3.0) : float2(2.0 / 3.0);
-        diagonal = abs(f.x + f.y - 1.0) * 0.7071;
-    } else {
-        centre = (f.x > f.y) ? float2(2.0 / 3.0, 1.0 / 3.0) : float2(1.0 / 3.0, 2.0 / 3.0);
-        diagonal = abs(f.x - f.y) * 0.7071;
+    float s = size.x / 6.0;
+    float2 o = floor(p / s) * s;
+    for (int i = 0; i < 4; i++) {
+        if (spread(o, s) > 0.12) {
+            s *= 0.5;
+            o = floor(p / s) * s;
+        }
     }
-    half3 c = at((cell + centre) * s);
-    float edge = min(min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)), diagonal);
-    half seam = 1.0 - smoothstep(0.0, 0.035, edge);
-    return half4(mix(c, c * 0.7, seam), 1.0);
+    half3 c = average(o, s);
+    float2 f = (p - o) / s;
+    float edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * s;
+    half seam = 1.0 - smoothstep(0.0, max(1.0, size.x / 700.0), edge);
+    return half4(mix(c, half3(0.0), seam * 0.85), 1.0);
 }
 """
 
+// A pixel grid where random spots swell: at each spot the grid is magnified, so its middle
+// pixels grow big and the ones around the rim get squeezed. Spots pulse over time.
+private const val SWELL = COMMON + """
+uniform float time;
+
+float hash(float2 c) { return fract(sin(dot(c, float2(127.1, 311.7))) * 43758.5453); }
+
+half4 main(float2 p) {
+    float cell = size.x / 5.0;
+    float2 home = floor(p / cell);
+    float2 w = p;      // where p lands on the undistorted grid
+    float best = 1.0;  // distance to the nearest spot, as a fraction of its radius
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            float2 k = home + float2(float(i), float(j));
+            float h = hash(k);
+            if (h > 0.3) {
+                float2 c = (k + 0.2 + 0.6 * float2(hash(k + 7.1), hash(k + 3.7))) * cell;
+                float radius = cell * (0.55 + 0.35 * sin(time * (0.6 + h) + h * 6.2831));
+                float2 d = p - c;
+                float t = length(d) / radius;
+                if (t < best) {
+                    best = t;
+                    // Exponent < 1 pulls the middle together (bigger pixels) and packs the rim.
+                    w = c + d * pow(max(t, 0.0001), 0.9);
+                }
+            }
+        }
+    }
+    float block = size.x / 48.0;
+    return half4(at((floor(w / block) + 0.5) * block), 1.0);
+}
+"""
+
+/**
+ * Pixel sorting: in each column, runs of pixels brighter than a threshold are sorted by
+ * brightness, dark to light, top to bottom. Dark pixels stay put and break the runs.
+ */
+private fun pixelSort(src: Bitmap): Bitmap {
+    val w = src.width
+    val h = src.height
+    val px = IntArray(w * h)
+    src.getPixels(px, 0, w, 0, 0, w, h)
+    fun luma(c: Int) = (((c shr 16) and 0xff) * 299 + ((c shr 8) and 0xff) * 587 + (c and 0xff) * 114) / 1000
+    val threshold = 70
+    val run = LongArray(h)
+    for (x in 0 until w) {
+        var y = 0
+        while (y < h) {
+            if (luma(px[y * w + x]) < threshold) { y++; continue }
+            val start = y
+            var n = 0
+            while (y < h && luma(px[y * w + x]) >= threshold) {
+                val c = px[y * w + x]
+                // Brightness in the high bits sorts by it; the colour rides along in the low bits.
+                run[n++] = (luma(c).toLong() shl 32) or (c.toLong() and 0xffffffffL)
+                y++
+            }
+            java.util.Arrays.sort(run, 0, n)
+            for (i in 0 until n) px[(start + i) * w + x] = run[i].toInt()
+        }
+    }
+    return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+}
+
 private fun RuntimeShader.size(i: FilterInputs) = setFloatUniform("size", i.width, i.height)
+
+private fun RuntimeShader.timed(i: FilterInputs) {
+    size(i)
+    setFloatUniform("time", i.time)
+}
 
 /** In the order the buttons show them. [Filter.stage] decides the stacking order. */
 val FILTERS = listOf(
-    Filter("CARTOON", 4, CARTOON) { size(it) },
-    Filter("HEAT", 5, HEAT) { size(it) },
-    Filter("PIXEL AVG", 1, PIXEL_AVG) { size(it) },
-    Filter("PAST LATENCY", 0, PAST_LATENCY) { inputs ->
+    Filter("CARTOON", 6, CARTOON, { size(it) }),
+    Filter("HEAT", 7, HEAT, { size(it) }),
+    Filter("PIXELATE", 3, PIXELATE, { size(it) }),
+    Filter("PAST LATENCY", 1, PAST_LATENCY, { inputs ->
         size(inputs)
         // Frames arrive at about 24 fps: 5 and 8 frames back are ~0.2 s and ~0.35 s.
         val past = inputs.past
@@ -249,15 +353,14 @@ val FILTERS = listOf(
             setInputShader("pastG", frameShader(past.getOrElse(5) { past.last() }, inputs))
             setInputShader("pastB", frameShader(past.getOrElse(8) { past.last() }, inputs))
         }
-    },
-    Filter("DREAMSCAPE", 3, DREAMSCAPE) { inputs ->
-        size(inputs)
-        setFloatUniform("time", inputs.time)
-    },
-    Filter("GEOMETRIC", 2, GEOMETRIC) { size(it) },
-    Filter("DUOTONE", 6, DUOTONE) { inputs ->
+    }),
+    Filter("DREAMSCAPE", 5, DREAMSCAPE, { timed(it) }),
+    Filter("GEOMETRIC", 4, GEOMETRIC, { size(it) }),
+    Filter("SWELL", 2, SWELL, { timed(it) }),
+    Filter("PIXEL SORT", 0, null, cpu = ::pixelSort),
+    Filter("DUOTONE", 8, DUOTONE, { inputs ->
         size(inputs)
         setColorUniform("dark", Color.parseColor("#0B1F4B"))
         setColorUniform("light", Color.parseColor("#FF6B4A"))
-    },
+    }),
 )

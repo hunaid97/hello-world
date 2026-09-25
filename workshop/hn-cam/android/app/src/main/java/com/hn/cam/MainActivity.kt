@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -140,9 +141,9 @@ class MainActivity : ComponentActivity() {
 
             // Every filter toggles on and off; any combination stacks.
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                FILTERS.chunked(2).forEach { pair ->
+                FILTERS.chunked(3).forEach { row ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        pair.forEach { f ->
+                        row.forEach { f ->
                             val on = f in filters
                             Box(
                                 Modifier.weight(1f)
@@ -155,7 +156,7 @@ class MainActivity : ComponentActivity() {
                                 Text(f.name, style = Mono.copy(color = if (on) Color.Black else Color.White))
                             }
                         }
-                        if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
@@ -187,7 +188,9 @@ class MainActivity : ComponentActivity() {
             contentAlignment = Alignment.Center,
         ) {
             val transfer = photo
-            val bmp = if (transfer != null) transfer.image else frame
+            val raw = if (transfer != null) transfer.image else frame
+            // CPU filters (pixel sort) run first, on a copy no wider than the viewfinder needs.
+            val bmp = remember(raw, filters) { raw?.let { applyCpuFilters(filters, it, maxWidth = 480) } }
             if (bmp == null && transfer == null) {
                 Text("Waiting for the camera", style = Mono.copy(fontWeight = FontWeight.Light))
             }

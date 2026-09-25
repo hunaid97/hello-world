@@ -18,10 +18,11 @@ import java.util.Locale
  */
 fun savePhoto(context: Context, jpeg: ByteArray, filters: Collection<Filter>, past: List<Bitmap>, time: Float): String? {
     val bytes = if (filters.isEmpty()) jpeg else {
-        val src = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
+        val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
+        val src = applyCpuFilters(filters, decoded)
         val inputs = FilterInputs(src.width.toFloat(), src.height.toFloat(), time, past)
-        val effect = buildEffect(filters, inputs, HashMap<Filter, RuntimeShader>())!!
-        val out = renderEffect(src, effect)
+        val effect = buildEffect(filters, inputs, HashMap<Filter, RuntimeShader>())
+        val out = if (effect == null) src else renderEffect(src, effect)
         ByteArrayOutputStream().also { out.compress(Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
     }
 
