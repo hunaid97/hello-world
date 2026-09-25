@@ -22,14 +22,26 @@ import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
- * Finds the HN_CAM board over Bluetooth LE, keeps it connected and turns its
- * notification byte stream back into JPEG frames and photos.
+ * Connects to the HN_CAM board and turns what it sends back into JPEG frames and photos.
+ *
+ * Two ways in ([Mode]):
+ * - BLUETOOTH: finds the board nearby and reads its notification byte stream.
+ * - WIFI: connects to the HN_CAM relay (relay/ in this project) from anywhere; the board is
+ *   on Wi-Fi and connected to the same relay.
  *
  * Wire format (see hn_cam.ino): 4-byte magic + uint32 little-endian length + JPEG.
- * "XCAM" is a live frame, "XSNP" a photo. Writing 'P' to CTRL asks for a photo.
+ * "XCAM" is a live frame, "XSNP" a photo. 'P' (CTRL over Bluetooth, a text message over the
+ * relay) asks for a photo.
  */
 @SuppressLint("MissingPermission") // MainActivity only calls start() once permissions are granted.
 class HnCamLink(private val context: Context) {
@@ -38,8 +50,28 @@ class HnCamLink(private val context: Context) {
         val SERVICE: UUID = UUID.fromString("7a1e0001-3c4b-4d8e-9f60-4e8c1a2b3c4d")
         val DATA: UUID = UUID.fromString("7a1e0002-3c4b-4d8e-9f60-4e8c1a2b3c4d")
         val CTRL: UUID = UUID.fromString("7a1e0003-3c4b-4d8e-9f60-4e8c1a2b3c4d")
+        val CONFIG: UUID = UUID.fromString("7a1e0004-3c4b-4d8e-9f60-4e8c1a2b3c4d")
+        val STATUS: UUID = UUID.fromString("7a1e0005-3c4b-4d8e-9f60-4e8c1a2b3c4d")
         val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
+
+    enum class Mode { BLUETOOTH, WIFI }
+
+    var mode = Mode.BLUETOOTH
+        private set
+
+    /** Switches between Bluetooth and Wi-Fi, reconnecting if running. */
+    fun setMode(m: Mode) = handler.post {
+        if (m == mode) return@post
+        val wasRunning = running
+        disconnectAll()
+        mode = m
+        if (wasRunning) begin()
+    }
+
+    /** The board's own report on its Wi-Fi and relay (read over Bluetooth). */
+    private val _boardWifi = MutableStateFlow("")
+    val boardWifi: StateFlow<String> = _boardWifi
 
     private val _status = MutableStateFlow("Starting")
     val status: StateFlow<String> = _status
@@ -83,6 +115,9 @@ class HnCamLink(private val context: Context) {
     private var photoId = 0
     private var gatt: BluetoothGatt? = null
     private var ctrl: BluetoothGattCharacteristic? = null
+    private var config: BluetoothGattCharacteristic? = null
+    private val http = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
+    private var socket: WebSocket? = null
     private var running = false
     private var scanning = false
 
@@ -99,24 +134,117 @@ class HnCamLink(private val context: Context) {
     fun start() = handler.post {
         if (running) return@post
         running = true
-        scan()
+        begin()
     }
 
     fun stop() = handler.post {
         running = false
+        disconnectAll()
+        _status.value = "Stopped"
+    }
+
+    private fun begin() = if (mode == Mode.BLUETOOTH) scan() else openRelay()
+
+    private fun disconnectAll() {
         stopScan()
         gatt?.close()
         gatt = null
+        ctrl = null
+        config = null
+        socket?.close(1000, null)
+        socket = null
+        parser.reset()
         _connected.value = false
-        _status.value = "Stopped"
+        _fps.value = 0
+        if (_photo.value?.done == false) _photo.value = null
     }
 
     /** Asks the board for a photo; it arrives through [onPhoto]. */
     fun requestPhoto(): Boolean {
+        if (mode == Mode.WIFI) return socket?.send("P") == true
         val g = gatt ?: return false
         val c = ctrl ?: return false
         return g.writeCharacteristic(c, byteArrayOf('P'.code.toByte()),
             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) == BluetoothGatt.GATT_SUCCESS
+    }
+
+    /**
+     * Sends Wi-Fi details and the relay address to the board (Bluetooth only). The board
+     * stores them and joins the network; watch [boardWifi] for how it goes.
+     */
+    fun sendWifiConfig(ssid: String, password: String): Boolean {
+        val g = gatt ?: return false
+        val c = config ?: return false
+        val payload = listOf(ssid, password, BuildConfig.RELAY_HOST, BuildConfig.RELAY_KEY)
+            .joinToString("\u001f").toByteArray()
+        return g.writeCharacteristic(c, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+            BluetoothGatt.GATT_SUCCESS
+    }
+
+    /** Every chunk from either link: count it for the photo readout, then parse it. */
+    private fun incoming(bytes: ByteArray) {
+        if (_photo.value?.done == false) photoPackets++
+        parser.feed(bytes)
+    }
+
+    // ---- Wi-Fi: through the relay ----
+
+    private fun openRelay() {
+        if (!running || socket != null) return
+        if (BuildConfig.RELAY_HOST.isEmpty()) {
+            _status.value = "No relay set up in this build"
+            return
+        }
+        _status.value = "Reaching the relay"
+        parser.reset()
+        val request = Request.Builder()
+            .url("wss://${BuildConfig.RELAY_HOST}/view?key=${BuildConfig.RELAY_KEY}")
+            .build()
+        socket = http.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(ws: WebSocket, response: Response) {
+                handler.post { if (socket == ws) _status.value = "Waiting for HN_CAM" }
+            }
+
+            override fun onMessage(ws: WebSocket, text: String) {
+                handler.post {
+                    if (socket != ws) return@post
+                    when (text) {
+                        "B1" -> { _connected.value = true; _status.value = "Connected" }
+                        "B0" -> { _connected.value = false; _fps.value = 0; _status.value = "HN_CAM is offline" }
+                    }
+                }
+            }
+
+            override fun onMessage(ws: WebSocket, bytes: ByteString) {
+                handler.post {
+                    if (socket != ws) return@post
+                    val data = bytes.toByteArray()
+                    incoming(data)
+                    // Each live frame is one message; acknowledging it lets the board send the
+                    // next, so the stream matches this connection's speed.
+                    if (data.size >= 4 && data[0] == 'X'.code.toByte() && data[1] == 'C'.code.toByte()) ws.send("A")
+                }
+            }
+
+            override fun onClosed(ws: WebSocket, code: Int, reason: String) = lost(ws, "Relay closed")
+
+            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) =
+                lost(ws, if (response?.code == 401) "Relay rejected the key" else "Can't reach the relay")
+        })
+    }
+
+    private fun lost(ws: WebSocket, why: String) {
+        handler.post {
+            if (socket != ws) return@post
+            socket = null
+            _connected.value = false
+            _fps.value = 0
+            if (_photo.value?.done == false) _photo.value = null
+            if (running && mode == Mode.WIFI) {
+                _status.value = "$why, retrying"
+                handler.postDelayed({ openRelay() }, 3000)
+            }
+        }
     }
 
     // ---- Scanning ----
@@ -140,7 +268,7 @@ class HnCamLink(private val context: Context) {
     }
 
     private fun scan() {
-        if (!running || scanning || gatt != null) return
+        if (!running || mode != Mode.BLUETOOTH || scanning || gatt != null) return
         val scanner = adapter?.bluetoothLeScanner
         if (adapter?.isEnabled != true || scanner == null) {
             _status.value = "Turn on Bluetooth"
@@ -191,8 +319,10 @@ class HnCamLink(private val context: Context) {
                 g.requestMtu(517)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 g.close()
-                if (gatt == g) gatt = null
+                if (gatt != g) return
+                gatt = null
                 ctrl = null
+                config = null
                 _connected.value = false
                 _fps.value = 0
                 if (_photo.value?.done == false) _photo.value = null
@@ -217,18 +347,33 @@ class HnCamLink(private val context: Context) {
                 return
             }
             ctrl = service.getCharacteristic(CTRL)
+            config = service.getCharacteristic(CONFIG)
             g.setCharacteristicNotification(data, true)
             g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
         }
 
+        // GATT operations go one at a time: video first, then the board's Wi-Fi status.
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            _connected.value = status == BluetoothGatt.GATT_SUCCESS
-            _status.value = if (_connected.value) "Connected" else "Couldn't subscribe ($status)"
+            if (d.characteristic.uuid == DATA) {
+                _connected.value = status == BluetoothGatt.GATT_SUCCESS
+                _status.value = if (_connected.value) "Connected" else "Couldn't subscribe ($status)"
+                val st = g.getService(SERVICE)?.getCharacteristic(STATUS)
+                val stCccd = st?.getDescriptor(CCCD)
+                if (st != null && stCccd != null) {
+                    g.setCharacteristicNotification(st, true)
+                    g.writeDescriptor(stCccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                }
+            } else if (d.characteristic.uuid == STATUS) {
+                g.readCharacteristic(d.characteristic)
+            }
+        }
+
+        override fun onCharacteristicRead(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+            if (c.uuid == STATUS && status == BluetoothGatt.GATT_SUCCESS) _boardWifi.value = String(value)
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
-            if (_photo.value?.done == false) photoPackets++
-            parser.feed(value)
+            if (c.uuid == STATUS) _boardWifi.value = String(value) else incoming(value)
         }
     }
 

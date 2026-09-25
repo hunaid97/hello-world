@@ -2,6 +2,7 @@
 build/
 app/build/
 local.properties
+secrets.properties
 .idea/
 *.iml
 # Lettera is a commercial Lineto font: keep it on this machine, don't publish it.

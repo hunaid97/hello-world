@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -14,6 +16,13 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1"
+
+        // Relay address and key for Wi-Fi mode, from secrets.properties (not in git).
+        val secrets = Properties().apply {
+            rootProject.file("secrets.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+        }
+        buildConfigField("String", "RELAY_HOST", "\"${secrets.getProperty("RELAY_HOST", "")}\"")
+        buildConfigField("String", "RELAY_KEY", "\"${secrets.getProperty("RELAY_KEY", "")}\"")
     }
 
     compileOptions {
@@ -25,6 +34,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -38,4 +48,5 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

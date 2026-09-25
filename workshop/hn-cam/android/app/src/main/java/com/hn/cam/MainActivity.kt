@@ -17,6 +17,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -64,6 +69,8 @@ class MainActivity : ComponentActivity() {
     private val active = mutableStateOf(setOf<Filter>())
     private val taking = mutableStateOf(false)
     private val lastSaved = mutableStateOf("")
+    private val mode = mutableStateOf(HnCamLink.Mode.BLUETOOTH)
+    private val showSetup = mutableStateOf(false)
 
     // Read on the Bluetooth thread when a photo arrives.
     @Volatile private var photoFilters: Set<Filter> = emptySet()
@@ -85,6 +92,10 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         link = HnCamLink(applicationContext)
+        // Remember the last mode between launches.
+        val prefs = getSharedPreferences("hn_cam", MODE_PRIVATE)
+        mode.value = HnCamLink.Mode.valueOf(prefs.getString("mode", null) ?: HnCamLink.Mode.BLUETOOTH.name)
+        link.setMode(mode.value)
         link.onPhoto = { jpeg ->
             val name = savePhoto(applicationContext, jpeg, photoFilters, link.recentFrames(), clock())
             lastSaved.value = name?.let { "Saved Pictures/HN_CAM/$it" } ?: "Couldn't save the photo"
@@ -108,8 +119,87 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    private fun switchMode(m: HnCamLink.Mode) {
+        mode.value = m
+        getSharedPreferences("hn_cam", MODE_PRIVATE).edit().putString("mode", m.name).apply()
+        link.setMode(m)
+    }
+
+    /** A white-outlined button; filled white while on. */
+    @Composable
+    private fun ToggleBox(label: String, on: Boolean, modifier: Modifier, enabled: Boolean = true, onClick: () -> Unit) {
+        Box(
+            modifier.alpha(if (enabled) 1f else 0.35f)
+                .border(1.dp, Color.White)
+                .background(if (on) Color.White else Color.Black)
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, style = Mono.copy(color = if (on) Color.Black else Color.White))
+        }
+    }
+
+    /**
+     * Wi-Fi setup: sends your network and the relay address to the board over Bluetooth.
+     * The password goes straight from this field to the board.
+     */
+    @Composable
+    private fun Setup() {
+        val connected by link.connected.collectAsState()
+        val boardWifi by link.boardWifi.collectAsState()
+        val ssid = remember { mutableStateOf("") }
+        val password = remember { mutableStateOf("") }
+        val note = remember { mutableStateOf("") }
+        val overBluetooth = mode.value == HnCamLink.Mode.BLUETOOTH && connected
+
+        Column(
+            Modifier.fillMaxSize().background(Color.Black).safeDrawingPadding().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text("WI-FI SETUP", style = Mono)
+            Text(
+                if (overBluetooth) "HN_CAM: ${boardWifi.ifEmpty { "..." }}"
+                else "Switch to BLUETOOTH and connect to HN_CAM first. The board gets its Wi-Fi details over Bluetooth.",
+                style = Mono.copy(fontWeight = FontWeight.Light),
+            )
+            Field("NETWORK", ssid.value, password = false) { ssid.value = it }
+            Field("PASSWORD", password.value, password = true) { password.value = it }
+            ToggleBox("SEND TO HN_CAM", false, Modifier.fillMaxWidth(), enabled = overBluetooth && ssid.value.isNotEmpty()) {
+                note.value = if (link.sendWifiConfig(ssid.value, password.value)) {
+                    password.value = ""
+                    "Sent. HN_CAM is joining ${ssid.value}; watch the line above."
+                } else "Couldn't send. Try again."
+            }
+            Text(note.value, style = Mono.copy(fontWeight = FontWeight.Light))
+            Spacer(Modifier.weight(1f))
+            ToggleBox("CLOSE", false, Modifier.fillMaxWidth()) { showSetup.value = false }
+        }
+    }
+
+    @Composable
+    private fun Field(label: String, value: String, password: Boolean, onChange: (String) -> Unit) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(label, style = Mono.copy(fontWeight = FontWeight.Light))
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                singleLine = true,
+                textStyle = Mono,
+                cursorBrush = SolidColor(Color.White),
+                visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+                keyboardOptions = KeyboardOptions(keyboardType = if (password) KeyboardType.Password else KeyboardType.Text, autoCorrectEnabled = false),
+                modifier = Modifier.fillMaxWidth().border(1.dp, Color.White).padding(12.dp),
+            )
+        }
+    }
+
     @Composable
     private fun Screen() {
+        if (showSetup.value) {
+            Setup()
+            return
+        }
         val status by link.status.collectAsState()
         val connected by link.connected.collectAsState()
         val fps by link.fps.collectAsState()
@@ -137,6 +227,16 @@ class MainActivity : ComponentActivity() {
                 Text(if (connected && status == "Connected") "$fps fps" else status, style = Mono)
             }
 
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToggleBox("BLUETOOTH", mode.value == HnCamLink.Mode.BLUETOOTH, Modifier.weight(1f)) {
+                    switchMode(HnCamLink.Mode.BLUETOOTH)
+                }
+                ToggleBox("WI-FI", mode.value == HnCamLink.Mode.WIFI, Modifier.weight(1f)) {
+                    switchMode(HnCamLink.Mode.WIFI)
+                }
+                ToggleBox("SETUP", showSetup.value, Modifier.weight(1f)) { showSetup.value = true }
+            }
+
             Preview(filters)
 
             // Every filter toggles on and off; any combination stacks.
@@ -145,15 +245,8 @@ class MainActivity : ComponentActivity() {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         row.forEach { f ->
                             val on = f in filters
-                            Box(
-                                Modifier.weight(1f)
-                                    .border(1.dp, Color.White)
-                                    .background(if (on) Color.White else Color.Black)
-                                    .clickable { active.value = if (on) filters - f else filters + f }
-                                    .padding(vertical = 12.dp),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(f.name, style = Mono.copy(color = if (on) Color.Black else Color.White))
+                            ToggleBox(f.name, on, Modifier.weight(1f)) {
+                                active.value = if (on) filters - f else filters + f
                             }
                         }
                         repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
