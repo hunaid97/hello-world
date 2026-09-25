@@ -3,10 +3,10 @@
 A tiny camera picture frame: XIAO ESP32-S3 Sense, a 0.96" 80x160 ST7735S IPS display and a
 bare EC11 rotary encoder with a push switch. Portrait, with the knob at the bottom.
 
-- The screen shows the camera live, and always comes back to it.
-- Press the knob: take a photo, save it, show it for 5 seconds, then back to live.
-- Turn the knob: scroll back through the saved photos (the last 20 stay in flash);
-  5 seconds without touching the knob goes back to live.
+- The newest photo stays on screen, like a picture frame.
+- Turn the knob: scroll through the saved photos (the last 20 stay in flash).
+  One step clockwise past the newest photo is LIVE, the camera, to aim a shot.
+- Press the knob: take a photo, save it and show it.
 - Hold the knob and turn: rotate the picture a quarter turn per click until it's upright.
 - The XIAO's orange LED blinks on every click (one blip clockwise, two counter-clockwise)
   and flashes long when a photo is taken, and the buzzer plays a shutter sound.

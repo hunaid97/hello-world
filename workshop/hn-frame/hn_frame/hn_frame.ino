@@ -1,10 +1,10 @@
 // HN_FRAME: a tiny camera picture frame.
 // XIAO ESP32-S3 Sense + 0.96" 80x160 ST7735S IPS display + rotary encoder with push switch.
 //
-//   The screen shows the camera live (LIVE), and always comes back to it.
-//   Press the knob:  take a photo, save it, show it for SHOW_PHOTO_MS, then back to LIVE.
-//   Turn the knob:   scroll back through saved photos (the last MAX_PHOTOS are kept in
-//                    flash); SHOW_PHOTO_MS without touching the knob goes back to LIVE.
+//   The newest photo stays on screen, like a picture frame.
+//   Turn the knob:   scroll through saved photos (the last MAX_PHOTOS are kept in flash).
+//                    One step clockwise past the newest photo is LIVE: the camera, to aim.
+//   Press the knob:  take a photo, save it, and show it (on release).
 //   Hold and turn:   rotate the picture a quarter turn per click, until it's upright.
 //                    Remembered across restarts.
 //
@@ -54,7 +54,6 @@
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
 #define BRIGHTNESS      255   // backlight, 0-255 (full)
-#define SHOW_PHOTO_MS   5000  // how long a photo stays up before going back to LIVE
 #define BUZZER_PASSIVE  true  // true: passive/piezo buzzer (plays tones); false: active buzzer (fixed beep)
 
 // Camera pins for the XIAO ESP32S3 Sense expansion board.
@@ -411,7 +410,6 @@ void message(const char *text) {
 static size_t position = 0;
 static uint32_t labelUntil = 0;
 static const char *labelText = nullptr;  // overrides the "3/20" label (e.g. "SAVED")
-static uint32_t lastInputMs = 0;          // last press or turn, for the return to LIVE
 
 bool isLive() {
   return position >= photos.size();
@@ -465,7 +463,6 @@ void capture() {
     return;
   }
   position = photos.size() - 1;
-  lastInputMs = millis();
   labelText = "SAVED";
   labelUntil = millis() + 1500;
   drawPhoto();
@@ -534,7 +531,9 @@ void setup() {
 
   Serial.printf("HN_FRAME ready: %u photos, %u KB free\n", (unsigned)photos.size(),
                 (unsigned)((LittleFS.totalBytes() - LittleFS.usedBytes()) / 1024));
-  position = photos.size();  // start on LIVE
+  // Start on the newest photo, or LIVE if there are none yet.
+  position = photos.empty() ? 0 : photos.size() - 1;
+  if (!isLive()) drawPhoto();
 }
 
 void loop() {
@@ -573,7 +572,6 @@ void loop() {
   }
 
   if (steps) {
-    lastInputMs = millis();
     Serial.printf("turn %+d\n", steps);
     blink(steps > 0 ? BLINK_CW : BLINK_CCW);
     // Clockwise goes newer, towards LIVE; counter-clockwise goes back in time.
@@ -582,13 +580,6 @@ void loop() {
     labelText = nullptr;
     labelUntil = millis() + 1500;
     if (!isLive()) drawPhoto();
-  }
-
-  // Back to the camera once a photo has been up for a while with nothing touched.
-  if (!isLive() && !held && millis() - lastInputMs > SHOW_PHOTO_MS) {
-    position = photos.size();
-    labelText = nullptr;
-    labelUntil = 0;
   }
 
   static bool labelShown = false;
