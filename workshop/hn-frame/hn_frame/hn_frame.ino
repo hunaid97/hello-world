@@ -1,9 +1,10 @@
 // HN_FRAME: a tiny camera picture frame.
 // XIAO ESP32-S3 Sense + 0.96" 80x160 ST7735S IPS display + rotary encoder with push switch.
 //
-//   Press the knob:  take a photo, save it, show it (on release).
-//   Turn the knob:   scroll through saved photos (the last MAX_PHOTOS are kept in flash).
-//                    One step past the newest photo is LIVE: what the camera sees now.
+//   The screen shows the camera live (LIVE), and always comes back to it.
+//   Press the knob:  take a photo, save it, show it for SHOW_PHOTO_MS, then back to LIVE.
+//   Turn the knob:   scroll back through saved photos (the last MAX_PHOTOS are kept in
+//                    flash); SHOW_PHOTO_MS without touching the knob goes back to LIVE.
 //   Hold and turn:   rotate the picture a quarter turn per click, until it's upright.
 //                    Remembered across restarts.
 //
@@ -53,6 +54,7 @@
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
 #define BRIGHTNESS      255   // backlight, 0-255 (full)
+#define SHOW_PHOTO_MS   5000  // how long a photo stays up before going back to LIVE
 #define BUZZER_PASSIVE  true  // true: passive/piezo buzzer (plays tones); false: active buzzer (fixed beep)
 
 // Camera pins for the XIAO ESP32S3 Sense expansion board.
@@ -409,6 +411,7 @@ void message(const char *text) {
 static size_t position = 0;
 static uint32_t labelUntil = 0;
 static const char *labelText = nullptr;  // overrides the "3/20" label (e.g. "SAVED")
+static uint32_t lastInputMs = 0;          // last press or turn, for the return to LIVE
 
 bool isLive() {
   return position >= photos.size();
@@ -431,7 +434,11 @@ void drawPhoto() {
 
 void drawLive() {
   camera_fb_t *fb = esp_camera_fb_get();
-  if (!fb) return;
+  if (!fb) {
+    static uint32_t misses = 0;
+    if (++misses % 20 == 1) Serial.printf("camera: no frame (%u so far)\n", (unsigned)misses);
+    return;
+  }
   drawJpegFill(fb->buf, fb->len);
   esp_camera_fb_return(fb);
   if (millis() < labelUntil && labelText) label(labelText, true);
@@ -458,6 +465,7 @@ void capture() {
     return;
   }
   position = photos.size() - 1;
+  lastInputMs = millis();
   labelText = "SAVED";
   labelUntil = millis() + 1500;
   drawPhoto();
@@ -513,6 +521,11 @@ void setup() {
   }
   loadPhotoList();
 
+  // The camera driver logs a warning from its own task for every bad frame, and printing
+  // it overflows that task's small stack and resets the board. Keep it quiet; bad frames
+  // are just skipped.
+  esp_log_level_set("cam_hal", ESP_LOG_NONE);
+  esp_log_level_set("camera", ESP_LOG_NONE);
   if (!setupCamera()) {
     message("CAMERA FAILED");
     Serial.println("Camera init failed. Is the Sense board attached and PSRAM set to OPI?");
@@ -521,12 +534,7 @@ void setup() {
 
   Serial.printf("HN_FRAME ready: %u photos, %u KB free\n", (unsigned)photos.size(),
                 (unsigned)((LittleFS.totalBytes() - LittleFS.usedBytes()) / 1024));
-  // Start on the newest photo, or LIVE if there are none yet.
-  position = photos.empty() ? 0 : photos.size() - 1;
-#ifdef START_LIVE
-  position = photos.size();  // test builds without a knob: go straight to the camera
-#endif
-  if (!isLive()) drawPhoto();
+  position = photos.size();  // start on LIVE
 }
 
 void loop() {
@@ -565,6 +573,7 @@ void loop() {
   }
 
   if (steps) {
+    lastInputMs = millis();
     Serial.printf("turn %+d\n", steps);
     blink(steps > 0 ? BLINK_CW : BLINK_CCW);
     // Clockwise goes newer, towards LIVE; counter-clockwise goes back in time.
@@ -573,6 +582,13 @@ void loop() {
     labelText = nullptr;
     labelUntil = millis() + 1500;
     if (!isLive()) drawPhoto();
+  }
+
+  // Back to the camera once a photo has been up for a while with nothing touched.
+  if (!isLive() && !held && millis() - lastInputMs > SHOW_PHOTO_MS) {
+    position = photos.size();
+    labelText = nullptr;
+    labelUntil = 0;
   }
 
   static bool labelShown = false;
