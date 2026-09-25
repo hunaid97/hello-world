@@ -1,15 +1,19 @@
 # HN_FRAME
 
 A tiny camera picture frame: XIAO ESP32-S3 Sense, a 0.96" 80x160 ST7735S IPS display and a
-rotary encoder with a push switch.
+bare EC11 rotary encoder with a push switch. Portrait, with the knob at the bottom.
 
 - Press the knob: take a photo, save it, show it.
 - Turn the knob: scroll through the saved photos (the last 20 stay in flash).
   One step past the newest photo is LIVE, what the camera sees now.
+- Hold the knob and turn: rotate the picture a quarter turn per click until it's upright.
+- The XIAO's orange LED blinks on every click (one blip clockwise, two counter-clockwise)
+  and flashes long when a photo is taken.
 
 ## Wiring
 
-Everything runs on 3V3. Don't put the encoder on 5V: its pull-ups would drive the ESP32 pins at 5V.
+The display runs on 3V3. The encoder needs no power: it only connects its pins to GND, and
+the ESP32's internal pull-ups do the rest.
 XIAO pins as seen from the top, USB-C at the top: left column D0-D6, right column 5V, GND, 3V3, D10, D9, D8, D7.
 
 | Part | Pin | XIAO |
@@ -22,11 +26,13 @@ XIAO pins as seen from the top, USB-C at the top: left column D0-D6, right colum
 | Display | DC | D2 |
 | Display | CS | D1 |
 | Display | BLK | D6 (backlight) |
-| Encoder | VCC | 3V3 |
-| Encoder | GND | GND |
-| Encoder | A | D4 |
-| Encoder | B | D5 |
-| Encoder | C (switch) | D0 |
+| Encoder (3-pin side) | A (outer) | D4 |
+| Encoder (3-pin side) | C (middle) | GND |
+| Encoder (3-pin side) | B (outer) | D5 |
+| Encoder (2-pin side) | switch pin 1 | D0 |
+| Encoder (2-pin side) | switch pin 2 | GND |
+
+If turning scrolls the wrong way, swap the A and B wires.
 
 ## Build
 

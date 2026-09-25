@@ -1,9 +1,15 @@
 // HN_FRAME: a tiny camera picture frame.
 // XIAO ESP32-S3 Sense + 0.96" 80x160 ST7735S IPS display + rotary encoder with push switch.
 //
-//   Press the knob:  take a photo, save it, show it.
+//   Press the knob:  take a photo, save it, show it (on release).
 //   Turn the knob:   scroll through saved photos (the last MAX_PHOTOS are kept in flash).
 //                    One step past the newest photo is LIVE: what the camera sees now.
+//   Hold and turn:   rotate the picture a quarter turn per click, until it's upright.
+//                    Remembered across restarts.
+//
+// The screen is portrait (80x160) with the knob at the bottom. The camera only captures
+// landscape 640x480, so every picture is turned 90 degrees and cropped to fill the screen.
+// Photos are stored as the camera took them (landscape).
 //
 // Board settings (Arduino IDE Tools menu / arduino-cli FQBN options):
 //   Board:            XIAO_ESP32S3              esp32:esp32:XIAO_ESP32S3
@@ -15,10 +21,12 @@
 //
 // Wiring (everything on 3V3):
 //   Display  GND-GND  VCC-3V3  SCL-D8  SDA-D10  RES-D3  DC-D2  CS-D1  BLK-D6
-//   Encoder  GND-GND  VCC-3V3  A-D4  B-D5  C (switch)-D0
+//   Encoder (bare EC11, uses the ESP32's pull-ups)
+//            A-D4  C (middle pin)-GND  B-D5    switch: one pin-D0, the other-GND
 
 #include "esp_camera.h"
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <vector>
 #include <algorithm>
 #define LGFX_USE_V1
@@ -37,7 +45,7 @@
 #define PIN_LED      21  // the XIAO's own orange user LED, active low
 
 // ---- Things to adjust once it's on the desk ----
-#define SCREEN_ROTATION 1     // 1 or 3: landscape, one way up or the other
+#define SCREEN_ROTATION 0     // 0 or 2: portrait, one way up or the other (for the text)
 #define CAMERA_VFLIP    false // flip the camera image if it's upside down on screen
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
@@ -114,7 +122,14 @@ class Display : public lgfx::LGFX_Device {
 
 static Display tft;
 static LGFX_Sprite frame(&tft);  // draw off-screen, then push in one go (no flicker)
-static const int W = 160, H = 80;
+static LGFX_Sprite raw(&tft);    // the camera's landscape picture at 1/4 size, before turning
+static const int W = 80, H = 160;
+static const int RAW_W = 160, RAW_H = 120;
+
+// How far to turn the camera's picture to stand it up on the portrait screen.
+// Hold the knob and turn to change it; saved in flash.
+static Preferences prefs;
+static int quarterTurns = 1;
 
 // ---- Encoder (interrupt driven, one step per detent) ----
 //
@@ -145,10 +160,14 @@ void IRAM_ATTR onEncoder() {
 
 void IRAM_ATTR onPress() {
   uint32_t now = millis();
-  if (now - lastPressMs > 250) {
+  if (now - lastPressMs > 150) {
     lastPressMs = now;
     pressed = true;
   }
+}
+
+bool knobDown() {
+  return digitalRead(PIN_ENC_SW) == LOW;
 }
 
 // ---- LED feedback: the knob's clicks and presses, as blinks on the onboard LED ----
@@ -292,8 +311,12 @@ bool setupCamera() {
 // A 640x480 JPEG at 1/4 is 160x120; drawing it 20 px up fills the 160x80 screen with the
 // middle of the picture.
 void drawJpegFill(const uint8_t *jpg, size_t len) {
+  // 640x480 at 1/4 is 160x120. Turned a quarter, that's 120x160: centred on the 80x160
+  // screen it fills the height and loses 20 px at each side.
+  raw.fillScreen(TFT_BLACK);
+  raw.drawJpg(jpg, len, 0, 0, RAW_W, RAW_H, 0, 0, 0.25f);
   frame.fillScreen(TFT_BLACK);
-  frame.drawJpg(jpg, len, 0, -20, W, 120, 0, 0, 0.25f);
+  raw.pushRotateZoom(&frame, W / 2.0f, H / 2.0f, quarterTurns * 90.0f, 1.0f, 1.0f);
 }
 
 // White text on a black box, in a corner.
@@ -346,6 +369,7 @@ void drawLive() {
   if (!fb) return;
   drawJpegFill(fb->buf, fb->len);
   esp_camera_fb_return(fb);
+  if (millis() < labelUntil && labelText) label(labelText, true);
   label("LIVE", false);
   frame.pushSprite(0, 0);
 }
@@ -384,11 +408,15 @@ void setup() {
   tft.setBrightness(BRIGHTNESS);
   frame.setColorDepth(16);
   frame.createSprite(W, H);
+  raw.setColorDepth(16);
+  raw.createSprite(RAW_W, RAW_H);
+  prefs.begin("hn_frame");
+  quarterTurns = prefs.getInt("turns", 1);
 
   // Colour check on every boot: red, green, blue, white bars. If they come out in a
   // different order, rgb_order in Display() needs flipping.
   const uint16_t bars[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_WHITE};
-  for (int i = 0; i < 4; i++) frame.fillRect(i * W / 4, 0, W / 4, H, bars[i]);
+  for (int i = 0; i < 4; i++) frame.fillRect(0, i * H / 4, W, H / 4, bars[i]);  // top to bottom
   frame.setTextColor(TFT_BLACK, TFT_WHITE);
   frame.setFont(&fonts::Font0);
   frame.drawString("HN_FRAME", 3, 3);
@@ -427,14 +455,40 @@ void setup() {
 }
 
 void loop() {
+  // A press takes a photo when the knob comes back up, unless it was turned while held
+  // (that rotates the picture instead).
+  static bool held = false;
+  static bool turnedWhileHeld = false;
   if (pressed) {
     pressed = false;
-    Serial.println("press");
-    blink(BLINK_PRESS);
-    capture();
+    held = true;
+    turnedWhileHeld = false;
   }
 
   int steps = takeSteps();
+  if (held && steps) {
+    turnedWhileHeld = true;
+    quarterTurns = ((quarterTurns + steps) % 4 + 4) % 4;
+    prefs.putInt("turns", quarterTurns);
+    Serial.printf("rotate: %d quarter turns\n", quarterTurns);
+    blink(steps > 0 ? BLINK_CW : BLINK_CCW);
+    labelText = "ROTATE";
+    labelUntil = millis() + 1500;
+    if (!isLive()) drawPhoto();
+    steps = 0;
+  }
+  if (held && !knobDown()) {
+    delay(20);  // let the switch settle before trusting the release
+    if (!knobDown()) {
+      held = false;
+      if (!turnedWhileHeld) {
+        Serial.println("press");
+        blink(BLINK_PRESS);
+        capture();
+      }
+    }
+  }
+
   if (steps) {
     Serial.printf("turn %+d\n", steps);
     blink(steps > 0 ? BLINK_CW : BLINK_CCW);
