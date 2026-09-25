@@ -129,7 +129,7 @@ static const int RAW_W = 160, RAW_H = 120;
 // How far to turn the camera's picture to stand it up on the portrait screen.
 // Hold the knob and turn to change it; saved in flash.
 static Preferences prefs;
-static int quarterTurns = 1;
+static int quarterTurns = 0;
 
 // ---- Encoder (interrupt driven, one step per detent) ----
 //
@@ -311,12 +311,14 @@ bool setupCamera() {
 // A 640x480 JPEG at 1/4 is 160x120; drawing it 20 px up fills the 160x80 screen with the
 // middle of the picture.
 void drawJpegFill(const uint8_t *jpg, size_t len) {
-  // 640x480 at 1/4 is 160x120. Turned a quarter, that's 120x160: centred on the 80x160
-  // screen it fills the height and loses 20 px at each side.
+  // 640x480 at 1/4 is 160x120, then turned and scaled to fill the 80x160 screen:
+  // - turned a quarter (odd turns) it's 120x160: fills the height, loses 20 px each side;
+  // - upright (even turns) it's zoomed to 213x160: fills the height, keeps the middle 80 px.
   raw.fillScreen(TFT_BLACK);
   raw.drawJpg(jpg, len, 0, 0, RAW_W, RAW_H, 0, 0, 0.25f);
   frame.fillScreen(TFT_BLACK);
-  raw.pushRotateZoom(&frame, W / 2.0f, H / 2.0f, quarterTurns * 90.0f, 1.0f, 1.0f);
+  float zoom = (quarterTurns % 2) ? 1.0f : (float)H / RAW_H;
+  raw.pushRotateZoom(&frame, W / 2.0f, H / 2.0f, quarterTurns * 90.0f, zoom, zoom);
 }
 
 // White text on a black box, in a corner.
@@ -411,7 +413,7 @@ void setup() {
   raw.setColorDepth(16);
   raw.createSprite(RAW_W, RAW_H);
   prefs.begin("hn_frame");
-  quarterTurns = prefs.getInt("turns", 1);
+  quarterTurns = prefs.getInt("turns", 0);
 
   // Colour check on every boot: red, green, blue, white bars. If they come out in a
   // different order, rgb_order in Display() needs flipping.
