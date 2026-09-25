@@ -50,21 +50,49 @@ class HnCamLink(private val context: Context) {
     private val _fps = MutableStateFlow(0)
     val fps: StateFlow<Int> = _fps
 
+    /** A photo on its way from the board, decoded as far as it has arrived. */
+    class PhotoTransfer(
+        val image: Bitmap?,
+        val received: Int,
+        val total: Int,
+        val packets: Int,
+        val done: Boolean,
+        /** Photo size and JPEG block (MCU) size from its header, once that has arrived. */
+        val layout: JpegLayout? = null,
+        /** How many blocks, in reading order, have been decoded so far. */
+        val blocksDone: Int = 0,
+    )
+
+    private val _photo = MutableStateFlow<PhotoTransfer?>(null)
+    val photo: StateFlow<PhotoTransfer?> = _photo
+
+    // The last half second of live frames, newest first, for filters that look back in time.
+    private val history = ArrayDeque<Bitmap>()
+    fun recentFrames(): List<Bitmap> = synchronized(history) { history.toList() }
+
     /** Called on the Bluetooth thread with each photo's JPEG bytes. */
     var onPhoto: ((ByteArray) -> Unit)? = null
 
     private val adapter = context.getSystemService(BluetoothManager::class.java).adapter
     private val thread = HandlerThread("hn-cam-ble").apply { start() }
     private val handler = Handler(thread.looper)
+    // Partial photo decodes run here so they never hold up incoming packets.
+    private val decodeThread = HandlerThread("hn-cam-decode").apply { start() }
+    private val decodeHandler = Handler(decodeThread.looper)
+    @Volatile private var decodeBusy = false
+    private var photoId = 0
     private var gatt: BluetoothGatt? = null
     private var ctrl: BluetoothGattCharacteristic? = null
     private var running = false
     private var scanning = false
 
     private val parser = PacketParser(
-        onPacket = { photo, jpeg -> if (photo) onPhoto?.invoke(jpeg) else showFrame(jpeg) },
-        onPhotoProgress = { percent -> _status.value = "Receiving photo $percent%" },
+        onPacket = { photo, jpeg -> if (photo) photoDone(jpeg) else showFrame(jpeg) },
+        onPhotoPartial = ::photoPartial,
     )
+    private var photoPackets = 0
+    private var lastPartialDecode = 0
+    private val clearPhoto = Runnable { _photo.value = null }
     private var framesThisSecond = 0
     private var secondStart = 0L
 
@@ -167,6 +195,7 @@ class HnCamLink(private val context: Context) {
                 ctrl = null
                 _connected.value = false
                 _fps.value = 0
+                if (_photo.value?.done == false) _photo.value = null
                 if (running) {
                     _status.value = "Lost HN_CAM, searching again"
                     retryLater()
@@ -198,8 +227,91 @@ class HnCamLink(private val context: Context) {
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
+            if (_photo.value?.done == false) photoPackets++
             parser.feed(value)
         }
+    }
+
+    // ---- Photo transfer, shown as it arrives ----
+
+    private fun photoPartial(data: ByteArray, offset: Int, received: Int, total: Int) {
+        val current = _photo.value
+        if (current == null || current.done) {
+            // First bytes of a new photo.
+            handler.removeCallbacks(clearPhoto)
+            photoId++
+            photoPackets = 1
+            lastPartialDecode = 0
+            _photo.value = PhotoTransfer(null, received, total, photoPackets, false)
+            return
+        }
+        val layout = current.layout ?: JpegLayout.parse(data, offset, received)
+        _photo.value = PhotoTransfer(current.image, received, total, photoPackets, false, layout, current.blocksDone)
+        if (layout == null || received - lastPartialDecode < 2048 || decodeBusy) return
+        lastPartialDecode = received
+
+        // Cap the truncated JPEG with an end-of-image marker. The decoder then renders every
+        // block that has arrived and fills the rest with flat grey, instead of stopping at the
+        // last complete row: that's what lets it build up block by block.
+        val snapshot = data.copyOfRange(offset, offset + received + 2)
+        snapshot[received] = 0xFF.toByte()
+        snapshot[received + 1] = 0xD9.toByte()
+        val id = photoId
+        decodeBusy = true
+        decodeHandler.post {
+            val bmp = BitmapFactory.decodeByteArray(snapshot, 0, snapshot.size)
+            val done = bmp?.let { blocksDecoded(it, layout) } ?: 0
+            handler.post {
+                val now = _photo.value
+                if (bmp != null && id == photoId && now != null && !now.done) {
+                    _photo.value = PhotoTransfer(bmp, now.received, now.total, now.packets, false, layout, done)
+                }
+                decodeBusy = false
+            }
+        }
+    }
+
+    private fun photoDone(jpeg: ByteArray) {
+        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+        _photo.value = PhotoTransfer(bmp, jpeg.size, jpeg.size, photoPackets, true)
+        onPhoto?.invoke(jpeg)
+        // Keep the finished photo on screen for a moment, then go back to live.
+        handler.postDelayed(clearPhoto, 1500)
+    }
+
+    private var pixels = IntArray(0)
+
+    /**
+     * Counts the blocks of a partly decoded JPEG that have arrived. Blocks past the end of the
+     * data decode with all-zero coefficients, which is exactly mid grey (128, 128, 128). Walk
+     * back from the last block while blocks are that grey; the first one that isn't is the
+     * last block received. (Scanning from the end means real grey areas earlier in the photo
+     * aren't mistaken for missing blocks.)
+     */
+    private fun blocksDecoded(bmp: Bitmap, layout: JpegLayout): Int {
+        val w = bmp.width
+        val h = bmp.height
+        if (pixels.size < w * h) pixels = IntArray(w * h)
+        bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+        fun grey(x: Int, y: Int): Boolean {
+            val c = pixels[minOf(y, h - 1) * w + minOf(x, w - 1)]
+            val r = (c shr 16) and 0xff
+            val g = (c shr 8) and 0xff
+            val b = c and 0xff
+            return r in 125..131 && g in 125..131 && b in 125..131
+        }
+        val bw = layout.blockW
+        val bh = layout.blockH
+        var i = layout.cols * layout.rows - 1
+        while (i >= 0) {
+            val x = (i % layout.cols) * bw
+            val y = (i / layout.cols) * bh
+            val missing = grey(x + 1, y + 1) && grey(x + bw - 2, y + 1) && grey(x + bw / 2, y + bh / 2) &&
+                grey(x + 1, y + bh - 2) && grey(x + bw - 2, y + bh - 2)
+            if (!missing) break
+            i--
+        }
+        return i + 1
     }
 
     private fun showFrame(jpeg: ByteArray) {
@@ -208,14 +320,19 @@ class HnCamLink(private val context: Context) {
             Log.d("HnCam", "decode failed size=${jpeg.size}")
             return
         }
+        synchronized(history) {
+            history.addFirst(bmp)
+            while (history.size > 12) history.removeLast()
+        }
         _frame.value = bmp
+        // A live frame while a photo was half done means the board gave up on the photo.
+        if (_photo.value?.done == false) _photo.value = null
         val now = SystemClock.elapsedRealtime()
         framesThisSecond++
         if (now - secondStart >= 1000) {
             _fps.value = framesThisSecond
             framesThisSecond = 0
             secondStart = now
-            if (_status.value.startsWith("Receiving photo")) _status.value = "Connected"
         }
     }
 }
@@ -223,7 +340,8 @@ class HnCamLink(private val context: Context) {
 /** Reassembles "XCAM"/"XSNP" packets from arbitrarily split chunks. */
 class PacketParser(
     private val onPacket: (photo: Boolean, jpeg: ByteArray) -> Unit,
-    private val onPhotoProgress: (percent: Int) -> Unit,
+    /** While a photo is arriving: its bytes so far are data[offset until offset + received]. */
+    private val onPhotoPartial: (data: ByteArray, offset: Int, received: Int, total: Int) -> Unit,
 ) {
     private companion object {
         const val MAX_PACKET = 2 * 1024 * 1024
@@ -231,7 +349,6 @@ class PacketParser(
 
     private var buf = ByteArray(256 * 1024)
     private var len = 0
-    private var lastProgress = -1
 
     fun reset() {
         len = 0
@@ -273,16 +390,47 @@ class PacketParser(
                 ((buf[6].toInt() and 0xff) shl 16) or ((buf[7].toInt() and 0xff) shl 24)
             if (size <= 0 || size > MAX_PACKET) { consume(4); continue }
             if (len < 8 + size) {
-                if (photo) {
-                    val p = 100 * (len - 8) / size
-                    if (p / 10 != lastProgress / 10) { lastProgress = p; onPhotoProgress(p) }
-                }
+                if (photo) onPhotoPartial(buf, 8, len - 8, size)
                 return
             }
             val jpeg = buf.copyOfRange(8, 8 + size)
             consume(8 + size)
-            lastProgress = -1
             if (jpeg[0] == 0xff.toByte() && jpeg[1] == 0xd8.toByte()) onPacket(photo, jpeg)
+        }
+    }
+}
+
+/** Size of a JPEG and of its blocks (MCUs), read from the SOF header. */
+class JpegLayout(val width: Int, val height: Int, val blockW: Int, val blockH: Int) {
+    val cols = (width + blockW - 1) / blockW
+    val rows = (height + blockH - 1) / blockH
+
+    companion object {
+        fun parse(d: ByteArray, offset: Int, len: Int): JpegLayout? {
+            fun u8(i: Int) = d[offset + i].toInt() and 0xff
+            var i = 2 // after SOI
+            while (i + 4 <= len) {
+                if (u8(i) != 0xFF) return null
+                val marker = u8(i + 1)
+                val segLen = (u8(i + 2) shl 8) or u8(i + 3)
+                if (marker in 0xC0..0xC2) {
+                    if (i + 10 > len) return null
+                    val height = (u8(i + 5) shl 8) or u8(i + 6)
+                    val width = (u8(i + 7) shl 8) or u8(i + 8)
+                    val comps = u8(i + 9)
+                    if (i + 10 + comps * 3 > len) return null
+                    var hMax = 1
+                    var vMax = 1
+                    for (c in 0 until comps) {
+                        val sampling = u8(i + 11 + c * 3)
+                        hMax = maxOf(hMax, sampling shr 4)
+                        vMax = maxOf(vMax, sampling and 0x0f)
+                    }
+                    return JpegLayout(width, height, 8 * hMax, 8 * vMax)
+                }
+                i += 2 + segLen
+            }
+            return null
         }
     }
 }

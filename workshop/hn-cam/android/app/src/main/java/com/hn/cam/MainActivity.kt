@@ -2,11 +2,11 @@ package com.hn.cam
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.BitmapShader
-import android.graphics.Matrix
 import android.graphics.Paint
-import android.graphics.Shader
+import android.graphics.RectF
+import android.graphics.RuntimeShader
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -38,6 +38,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.text.TextStyle
@@ -58,12 +60,18 @@ private val Mono = TextStyle(fontFamily = Lettera, color = Color.White, fontSize
 class MainActivity : ComponentActivity() {
     private lateinit var link: HnCamLink
 
-    private val filterIndex = mutableStateOf(0)
+    private val active = mutableStateOf(setOf<Filter>())
     private val taking = mutableStateOf(false)
     private val lastSaved = mutableStateOf("")
 
     // Read on the Bluetooth thread when a photo arrives.
-    @Volatile private var photoFilter: Filter = FILTERS[0]
+    @Volatile private var photoFilters: Set<Filter> = emptySet()
+
+    // Compiled shaders for the live view (UI thread only; photos compile their own).
+    private val previewShaders = HashMap<Filter, RuntimeShader>()
+    private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val startMs = SystemClock.elapsedRealtime()
+    private fun clock() = (SystemClock.elapsedRealtime() - startMs) / 1000f
 
     private val permissions = arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
     private val askPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -77,7 +85,7 @@ class MainActivity : ComponentActivity() {
 
         link = HnCamLink(applicationContext)
         link.onPhoto = { jpeg ->
-            val name = savePhoto(applicationContext, jpeg, photoFilter)
+            val name = savePhoto(applicationContext, jpeg, photoFilters, link.recentFrames(), clock())
             lastSaved.value = name?.let { "Saved Pictures/HN_CAM/$it" } ?: "Couldn't save the photo"
             taking.value = false
         }
@@ -104,8 +112,8 @@ class MainActivity : ComponentActivity() {
         val status by link.status.collectAsState()
         val connected by link.connected.collectAsState()
         val fps by link.fps.collectAsState()
-        val filter = FILTERS[filterIndex.value]
-        photoFilter = filter
+        val filters = active.value
+        photoFilters = filters
 
         // If a photo never arrives (link dropped mid-transfer), let the shutter work again.
         LaunchedEffect(taking.value) {
@@ -123,32 +131,38 @@ class MainActivity : ComponentActivity() {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("HN_CAM", style = Mono.copy(fontSize = 22.sp))
+                Text("HN_CAM", style = Mono)
                 Spacer(Modifier.weight(1f))
                 Text(if (connected && status == "Connected") "$fps fps" else status, style = Mono)
             }
 
-            Preview(filter)
+            Preview(filters)
 
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FILTERS.forEachIndexed { i, f ->
-                    val selected = i == filterIndex.value
-                    Box(
-                        Modifier.weight(1f)
-                            .border(1.dp, Color.White)
-                            .background(if (selected) Color.White else Color.Black)
-                            .clickable { filterIndex.value = i }
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(f.name, style = Mono.copy(color = if (selected) Color.Black else Color.White))
+            // Every filter toggles on and off; any combination stacks.
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FILTERS.chunked(2).forEach { pair ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        pair.forEach { f ->
+                            val on = f in filters
+                            Box(
+                                Modifier.weight(1f)
+                                    .border(1.dp, Color.White)
+                                    .background(if (on) Color.White else Color.Black)
+                                    .clickable { active.value = if (on) filters - f else filters + f }
+                                    .padding(vertical = 12.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(f.name, style = Mono.copy(color = if (on) Color.Black else Color.White))
+                            }
+                        }
+                        if (pair.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             }
 
             Spacer(Modifier.weight(1f))
 
-            Text(lastSaved.value, style = Mono.copy(fontSize = 12.sp, fontWeight = FontWeight.Light),
+            Text(lastSaved.value, style = Mono.copy(fontWeight = FontWeight.Light),
                 modifier = Modifier.align(Alignment.CenterHorizontally))
 
             Shutter(
@@ -165,31 +179,97 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Preview(filter: Filter) {
+    private fun Preview(filters: Set<Filter>) {
         val frame by link.frame.collectAsState()
-        val paint = Paint()
+        val photo by link.photo.collectAsState()
         Box(
             Modifier.fillMaxWidth().aspectRatio(4f / 3f).border(1.dp, Color.White),
             contentAlignment = Alignment.Center,
         ) {
-            val bmp = frame
-            if (bmp == null) {
+            val transfer = photo
+            val bmp = if (transfer != null) transfer.image else frame
+            if (bmp == null && transfer == null) {
                 Text("Waiting for the camera", style = Mono.copy(fontWeight = FontWeight.Light))
-            } else {
-                Canvas(Modifier.fillMaxSize().padding(1.dp)) {
-                    // Fit the frame in the box, then let the filter paint it.
-                    val scale = minOf(size.width / bmp.width, size.height / bmp.height)
-                    val w = bmp.width * scale
-                    val h = bmp.height * scale
-                    val dx = (size.width - w) / 2
-                    val dy = (size.height - h) / 2
-                    val image = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
-                        setLocalMatrix(Matrix().apply { setScale(scale, scale); postTranslate(dx, dy) })
+            }
+            Box(Modifier.fillMaxSize().padding(1.dp)) {
+                if (bmp != null) {
+                    // The image, with the filter stack applied to the whole layer on the GPU.
+                    Canvas(Modifier.fillMaxSize().graphicsLayer {
+                        clip = true
+                        val inputs = FilterInputs(size.width, size.height, clock(), link.recentFrames())
+                        renderEffect = buildEffect(filters, inputs, previewShaders)?.asComposeRenderEffect()
+                    }) {
+                        drawIntoCanvas { it.nativeCanvas.drawBitmap(bmp, null, RectF(0f, 0f, size.width, size.height), bitmapPaint) }
                     }
-                    paint.shader = filter.previewShader(image, w, h)
-                    drawIntoCanvas { it.nativeCanvas.drawRect(dx, dy, dx + w, dy + h, paint) }
+                }
+                // The mosaic of blocks still to come sits on top, unfiltered.
+                val layout = transfer?.layout
+                if (transfer != null && !transfer.done && layout != null) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val blocks = if (bmp == null) 0 else transfer.blocksDone
+                        drawIntoCanvas { drawMosaic(it.nativeCanvas, layout, blocks, size.width, size.height) }
+                    }
                 }
             }
+            if (transfer != null) TransferReadout(transfer, Modifier.align(Alignment.BottomStart))
+        }
+    }
+
+    private val gridPaint = Paint().apply { color = 0x2EFFFFFF; strokeWidth = 1f }
+    private val headPaint = Paint().apply { color = android.graphics.Color.WHITE }
+    private val emptyPaint = Paint().apply { color = android.graphics.Color.BLACK }
+
+    /**
+     * Covers the blocks that haven't arrived: black, with a faint grid of empty cells, and
+     * the block being written right now in white. [w] x [h] is the photo's size on screen.
+     */
+    private fun drawMosaic(c: android.graphics.Canvas, layout: JpegLayout, blocksDone: Int, w: Float, h: Float) {
+        val sx = w / layout.width
+        val sy = h / layout.height
+        val cellW = layout.blockW * sx
+        val cellH = layout.blockH * sy
+        val row = blocksDone / layout.cols
+        val col = blocksDone % layout.cols
+        val rowTop = row * cellH
+        val rowBottom = minOf(h, rowTop + cellH)
+
+        // Missing area: the rest of the current block row, then everything below it.
+        val missing = android.graphics.Path().apply {
+            addRect(col * cellW, rowTop, w, rowBottom, android.graphics.Path.Direction.CW)
+            addRect(0f, rowBottom, w, h, android.graphics.Path.Direction.CW)
+        }
+        c.drawPath(missing, emptyPaint)
+
+        // Grid lines on real block edges; skip some if the blocks are tiny on screen.
+        val stepX = maxOf(1, kotlin.math.ceil(10f / cellW).toInt())
+        val stepY = maxOf(1, kotlin.math.ceil(10f / cellH).toInt())
+        c.save()
+        c.clipPath(missing)
+        var x = 0
+        while (x <= layout.cols) { c.drawLine(x * cellW, rowTop, x * cellW, h, gridPaint); x += stepX }
+        var y = row
+        while (y <= layout.rows) { c.drawLine(0f, y * cellH, w, y * cellH, gridPaint); y += stepY }
+        c.restore()
+
+        // The write head.
+        if (blocksDone < layout.cols * layout.rows) {
+            c.drawRect(col * cellW, rowTop, col * cellW + maxOf(cellW, 3f), rowTop + maxOf(cellH, 3f), headPaint)
+        }
+    }
+
+    /** Percentage, packets and bytes of the photo on its way, over the viewfinder. */
+    @Composable
+    private fun TransferReadout(t: HnCamLink.PhotoTransfer, modifier: Modifier) {
+        val fraction = if (t.total > 0) t.received.toFloat() / t.total else 0f
+        Column(modifier.fillMaxWidth()) {
+            Column(Modifier.padding(start = 1.dp).background(Color.Black).padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Text(if (t.done) "SAVED" else "RECEIVING  ${(fraction * 100).toInt()}%", style = Mono)
+                Text(
+                    "${t.packets} PACKETS · ${t.received / 1024} / ${t.total / 1024} KB",
+                    style = Mono.copy(fontWeight = FontWeight.Light),
+                )
+            }
+            Box(Modifier.fillMaxWidth(fraction).height(3.dp).background(Color.White))
         }
     }
 

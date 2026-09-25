@@ -76,7 +76,7 @@ struct LinkSettings {
   int photoQuality;
 };
 static const LinkSettings USB_SETTINGS = {FRAMESIZE_VGA, 12, FRAMESIZE_UXGA, 10};
-static const LinkSettings BLE_SETTINGS = {FRAMESIZE_QVGA, 20, FRAMESIZE_XGA, 12};
+static const LinkSettings BLE_SETTINGS = {FRAMESIZE_QVGA, 20, FRAMESIZE_UXGA, 12};
 
 static uint32_t lastUsbRxMs = 0;
 static bool usbSeen = false;
