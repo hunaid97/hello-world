@@ -48,7 +48,7 @@
 #define PIN_BUZZER   44  // D7
 
 // ---- Things to adjust once it's on the desk ----
-#define SCREEN_ROTATION 0     // 0 or 2: portrait, one way up or the other (for the text)
+#define SCREEN_ROTATION 2     // 0 or 2: portrait, one way up or the other (for the text)
 #define CAMERA_VFLIP    false // flip the camera image if it's upside down on screen
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
@@ -378,7 +378,10 @@ void drawJpegFill(const uint8_t *jpg, size_t len) {
   raw.drawJpg(jpg, len, 0, 0, RAW_W, RAW_H, 0, 0, 0.25f);
   frame.fillScreen(TFT_BLACK);
   float zoom = (quarterTurns % 2) ? 1.0f : (float)H / RAW_H;
-  raw.pushRotateZoom(&frame, W / 2.0f, H / 2.0f, quarterTurns * 90.0f, zoom, zoom);
+  // SCREEN_ROTATION turns the text and the picture together; undo it for the picture so the
+  // two can be set separately (hold-and-turn for the picture, SCREEN_ROTATION for the text).
+  float angle = quarterTurns * 90.0f + (SCREEN_ROTATION == 2 ? 180.0f : 0.0f);
+  raw.pushRotateZoom(&frame, W / 2.0f, H / 2.0f, angle, zoom, zoom);
 }
 
 // White text on a black box, in a corner.
