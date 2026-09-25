@@ -520,6 +520,9 @@ void setup() {
                 (unsigned)((LittleFS.totalBytes() - LittleFS.usedBytes()) / 1024));
   // Start on the newest photo, or LIVE if there are none yet.
   position = photos.empty() ? 0 : photos.size() - 1;
+#ifdef START_LIVE
+  position = photos.size();  // test builds without a knob: go straight to the camera
+#endif
   if (!isLive()) drawPhoto();
 }
 
