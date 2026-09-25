@@ -34,6 +34,22 @@ XIAO pins as seen from the top, USB-C at the top: left column D0-D6, right colum
 
 If turning scrolls the wrong way, swap the A and B wires.
 
+## Power
+
+A single-cell 3.7V LiPo (with a protection circuit) on the XIAO's BAT+ / BAT- pads, on the
+underside. The XIAO charges it from USB-C.
+
+| From | To |
+|---|---|
+| Battery + (red) | SPDT switch, middle pin |
+| SPDT switch, one outer pin | XIAO BAT+ |
+| SPDT switch, other outer pin | nothing |
+| Battery - (black) | XIAO BAT- |
+
+The switch disconnects the battery. With USB-C plugged in the board runs whatever the switch
+says, and the battery only charges while the switch is on. Keep the display on 3V3: the 5V pin
+is only powered from USB.
+
 ## Build
 
 ```
