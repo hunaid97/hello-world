@@ -34,6 +34,7 @@
 #define PIN_ENC_A    5   // D4
 #define PIN_ENC_B    6   // D5
 #define PIN_ENC_SW   1   // D0
+#define PIN_LED      21  // the XIAO's own orange user LED, active low
 
 // ---- Things to adjust once it's on the desk ----
 #define SCREEN_ROTATION 1     // 1 or 3: landscape, one way up or the other
@@ -148,6 +149,38 @@ void IRAM_ATTR onPress() {
     lastPressMs = now;
     pressed = true;
   }
+}
+
+// ---- LED feedback: the knob's clicks and presses, as blinks on the onboard LED ----
+//
+// One colour only, so events differ by pattern: clockwise = one short blip,
+// counter-clockwise = two blips, press = one long flash. A small task plays them, so they
+// keep their timing even while the loop is busy drawing.
+
+enum Blink : uint32_t { BLINK_CW = 1, BLINK_CCW = 2, BLINK_PRESS = 3 };
+static TaskHandle_t ledTask = nullptr;
+
+void led(bool on) {
+  digitalWrite(PIN_LED, on ? LOW : HIGH);
+}
+
+void ledLoop(void *) {
+  uint32_t pattern;
+  while (true) {
+    xTaskNotifyWait(0, 0xffffffff, &pattern, portMAX_DELAY);
+    if (pattern == BLINK_CW) {
+      led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false);
+    } else if (pattern == BLINK_CCW) {
+      led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false); vTaskDelay(pdMS_TO_TICKS(70));
+      led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false);
+    } else if (pattern == BLINK_PRESS) {
+      led(true); vTaskDelay(pdMS_TO_TICKS(300)); led(false);
+    }
+  }
+}
+
+void blink(uint32_t b) {  // a Blink value; uint32_t because Arduino hoists prototypes above the enum
+  if (ledTask) xTaskNotify(ledTask, b, eSetValueWithOverwrite);
 }
 
 int takeSteps() {
@@ -362,6 +395,10 @@ void setup() {
   frame.pushSprite(0, 0);
   delay(1200);
 
+  pinMode(PIN_LED, OUTPUT);
+  led(false);
+  xTaskCreate(ledLoop, "led", 2048, nullptr, 2, &ledTask);
+
   pinMode(PIN_ENC_A, INPUT_PULLUP);
   pinMode(PIN_ENC_B, INPUT_PULLUP);
   pinMode(PIN_ENC_SW, INPUT_PULLUP);
@@ -393,12 +430,14 @@ void loop() {
   if (pressed) {
     pressed = false;
     Serial.println("press");
+    blink(BLINK_PRESS);
     capture();
   }
 
   int steps = takeSteps();
   if (steps) {
     Serial.printf("turn %+d\n", steps);
+    blink(steps > 0 ? BLINK_CW : BLINK_CCW);
     // Clockwise goes newer, towards LIVE; counter-clockwise goes back in time.
     long p = (long)position + steps;
     position = (size_t)constrain(p, 0L, (long)photos.size());
