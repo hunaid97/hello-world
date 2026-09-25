@@ -54,6 +54,8 @@
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
 #define BRIGHTNESS      255   // backlight, 0-255 (full)
+#define SCREEN_CONTRAST   1.25f  // on-screen only: 1.0 = as shot
+#define SCREEN_SATURATION 1.45f  // on-screen only: 1.0 = as shot
 #define BUZZER_PASSIVE  true  // true: passive/piezo buzzer (plays tones); false: active buzzer (fixed beep)
 
 // Camera pins for the XIAO ESP32S3 Sense expansion board.
@@ -371,12 +373,48 @@ bool setupCamera() {
 
 // A 640x480 JPEG at 1/4 is 160x120; drawing it 20 px up fills the 160x80 screen with the
 // middle of the picture.
+// ---- Punchier colour on the screen (saved photos are left as shot) ----
+
+static uint8_t contrastLut[256];
+
+void buildContrastLut() {
+  for (int i = 0; i < 256; i++) {
+    float v = (i - 128) * SCREEN_CONTRAST + 128;
+    contrastLut[i] = (uint8_t)constrain((int)(v + 0.5f), 0, 255);
+  }
+}
+
+static inline int clamp255(int v) {
+  return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+
+// Saturation (push each pixel away from its own grey) then contrast, on a 16-bit sprite.
+// LovyanGFX keeps 16-bit sprite pixels byte-swapped, ready to send to the panel.
+void enhance(LGFX_Sprite &spr) {
+  uint16_t *px = (uint16_t *)spr.getBuffer();
+  const int n = spr.width() * spr.height();
+  const int sat = (int)(SCREEN_SATURATION * 256);
+  for (int i = 0; i < n; i++) {
+    uint16_t c = __builtin_bswap16(px[i]);
+    int r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
+    r = (r << 3) | (r >> 2);
+    g = (g << 2) | (g >> 4);
+    b = (b << 3) | (b >> 2);
+    int grey = (r * 77 + g * 150 + b * 29) >> 8;
+    r = contrastLut[clamp255(grey + (((r - grey) * sat) >> 8))];
+    g = contrastLut[clamp255(grey + (((g - grey) * sat) >> 8))];
+    b = contrastLut[clamp255(grey + (((b - grey) * sat) >> 8))];
+    px[i] = __builtin_bswap16((uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)));
+  }
+}
+
 void drawJpegFill(const uint8_t *jpg, size_t len) {
   // 640x480 at 1/4 is 160x120, then turned and scaled to fill the 80x160 screen:
   // - turned a quarter (odd turns) it's 120x160: fills the height, loses 20 px each side;
   // - upright (even turns) it's zoomed to 213x160: fills the height, keeps the middle 80 px.
   raw.fillScreen(TFT_BLACK);
   raw.drawJpg(jpg, len, 0, 0, RAW_W, RAW_H, 0, 0, 0.25f);
+  enhance(raw);
   frame.fillScreen(TFT_BLACK);
   float zoom = (quarterTurns % 2) ? 1.0f : (float)H / RAW_H;
   // SCREEN_ROTATION turns the text and the picture together; undo it for the picture so the
@@ -487,6 +525,7 @@ void setup() {
   frame.createSprite(W, H);
   raw.setColorDepth(16);
   raw.createSprite(RAW_W, RAW_H);
+  buildContrastLut();
   prefs.begin("hn_frame");
   quarterTurns = prefs.getInt("turns", 0);
 
