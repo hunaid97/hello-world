@@ -8,7 +8,7 @@ bare EC11 rotary encoder with a push switch. Portrait, with the knob at the bott
   One step past the newest photo is LIVE, what the camera sees now.
 - Hold the knob and turn: rotate the picture a quarter turn per click until it's upright.
 - The XIAO's orange LED blinks on every click (one blip clockwise, two counter-clockwise)
-  and flashes long when a photo is taken.
+  and flashes long when a photo is taken, and the buzzer plays a shutter sound.
 
 ## Wiring
 
@@ -32,7 +32,12 @@ XIAO pins as seen from the top, USB-C at the top: left column D0-D6, right colum
 | Encoder (2-pin side) | switch pin 1 | D0 |
 | Encoder (2-pin side) | switch pin 2 | GND |
 
-If turning scrolls the wrong way, swap the A and B wires.
+| Buzzer | + | D7 |
+| Buzzer | - | GND |
+
+If turning scrolls the wrong way, swap the A and B wires. A 3-pin buzzer module goes
+VCC-3V3, GND-GND, I/O-D7. The firmware expects a passive (piezo) buzzer and plays a shutter
+sound; for an active buzzer set `BUZZER_PASSIVE` to false.
 
 ## Power
 

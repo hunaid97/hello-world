@@ -23,10 +23,12 @@
 //   Display  GND-GND  VCC-3V3  SCL-D8  SDA-D10  RES-D3  DC-D2  CS-D1  BLK-D6
 //   Encoder (bare EC11, uses the ESP32's pull-ups)
 //            A-D4  C (middle pin)-GND  B-D5    switch: one pin-D0, the other-GND
+//   Buzzer   +-D7  --GND   (3-pin buzzer module: VCC-3V3, GND-GND, I/O-D7)
 
 #include "esp_camera.h"
 #include <LittleFS.h>
 #include <Preferences.h>
+#include "driver/ledc.h"
 #include <vector>
 #include <algorithm>
 #define LGFX_USE_V1
@@ -43,6 +45,7 @@
 #define PIN_ENC_B    6   // D5
 #define PIN_ENC_SW   1   // D0
 #define PIN_LED      21  // the XIAO's own orange user LED, active low
+#define PIN_BUZZER   44  // D7
 
 // ---- Things to adjust once it's on the desk ----
 #define SCREEN_ROTATION 0     // 0 or 2: portrait, one way up or the other (for the text)
@@ -50,6 +53,7 @@
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
 #define BRIGHTNESS      255   // backlight, 0-255 (full)
+#define BUZZER_PASSIVE  true  // true: passive/piezo buzzer (plays tones); false: active buzzer (fixed beep)
 
 // Camera pins for the XIAO ESP32S3 Sense expansion board.
 #define PWDN_GPIO_NUM  -1
@@ -74,7 +78,6 @@
 class Display : public lgfx::LGFX_Device {
   lgfx::Panel_ST7735S panel;
   lgfx::Bus_SPI bus;
-  lgfx::Light_PWM light;
 
  public:
   Display() {
@@ -108,19 +111,56 @@ class Display : public lgfx::LGFX_Device {
     p.bus_shared = false;
     panel.config(p);
 
-    auto l = light.config();
-    l.pin_bl = PIN_TFT_BL;
-    l.invert = false;
-    l.freq = 12000;
-    l.pwm_channel = 7;  // the camera clock uses LEDC channel/timer 0
-    light.config(l);
-    panel.setLight(&light);
-
     setPanel(&panel);
   }
 };
 
 static Display tft;
+
+// ---- PWM for the backlight and the buzzer ----
+//
+// Set up straight on the ESP-IDF LEDC driver, each on its own timer. The camera's clock is on
+// LEDC timer 0 but the Arduino core doesn't know that, so letting the core pick timers can put
+// something else on timer 0 and have the camera reprogram it (that dimmed the backlight).
+
+static const ledc_timer_t BL_TIMER = LEDC_TIMER_1, BUZZ_TIMER = LEDC_TIMER_2;
+static const ledc_channel_t BL_CHANNEL = LEDC_CHANNEL_7, BUZZ_CHANNEL = LEDC_CHANNEL_5;
+
+void pwmInit(int pin, ledc_timer_t timer, ledc_channel_t channel, uint32_t freq) {
+  ledc_timer_config_t t = {};
+  t.speed_mode = LEDC_LOW_SPEED_MODE;
+  t.duty_resolution = LEDC_TIMER_10_BIT;
+  t.timer_num = timer;
+  t.freq_hz = freq;
+  t.clk_cfg = LEDC_AUTO_CLK;
+  ledc_timer_config(&t);
+  ledc_channel_config_t c = {};
+  c.gpio_num = pin;
+  c.speed_mode = LEDC_LOW_SPEED_MODE;
+  c.channel = channel;
+  c.timer_sel = timer;
+  c.duty = 0;
+  c.hpoint = 0;
+  ledc_channel_config(&c);
+}
+
+void pwmDuty(ledc_channel_t channel, uint32_t duty) {  // 0-1023
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, channel, duty);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, channel);
+}
+
+void setBacklight(uint8_t level) {
+  pwmDuty(BL_CHANNEL, (uint32_t)level * 1023 / 255);
+}
+
+void buzz(uint32_t freq) {  // 0 = silent
+  if (!BUZZER_PASSIVE) {
+    digitalWrite(PIN_BUZZER, freq ? HIGH : LOW);
+    return;
+  }
+  if (freq) ledc_set_freq(LEDC_LOW_SPEED_MODE, BUZZ_TIMER, freq);
+  pwmDuty(BUZZ_CHANNEL, freq ? 512 : 0);  // 50% square wave
+}
 static LGFX_Sprite frame(&tft);  // draw off-screen, then push in one go (no flicker)
 static LGFX_Sprite raw(&tft);    // the camera's landscape picture at 1/4 size, before turning
 static const int W = 80, H = 160;
@@ -193,7 +233,13 @@ void ledLoop(void *) {
       led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false); vTaskDelay(pdMS_TO_TICKS(70));
       led(true); vTaskDelay(pdMS_TO_TICKS(30)); led(false);
     } else if (pattern == BLINK_PRESS) {
-      led(true); vTaskDelay(pdMS_TO_TICKS(300)); led(false);
+      // Shutter: a high tick and a lower clack, with the LED on throughout.
+      led(true);
+      buzz(2600); vTaskDelay(pdMS_TO_TICKS(25));
+      buzz(0);    vTaskDelay(pdMS_TO_TICKS(15));
+      buzz(1700); vTaskDelay(pdMS_TO_TICKS(45));
+      buzz(0);    vTaskDelay(pdMS_TO_TICKS(215));
+      led(false);
     }
   }
 }
@@ -407,7 +453,14 @@ void setup() {
 
   tft.init();
   tft.setRotation(SCREEN_ROTATION);
-  tft.setBrightness(BRIGHTNESS);
+  pwmInit(PIN_TFT_BL, BL_TIMER, BL_CHANNEL, 20000);
+  setBacklight(BRIGHTNESS);
+  if (BUZZER_PASSIVE) {
+    pwmInit(PIN_BUZZER, BUZZ_TIMER, BUZZ_CHANNEL, 2000);
+  } else {
+    pinMode(PIN_BUZZER, OUTPUT);
+    digitalWrite(PIN_BUZZER, LOW);
+  }
   frame.setColorDepth(16);
   frame.createSprite(W, H);
   raw.setColorDepth(16);
