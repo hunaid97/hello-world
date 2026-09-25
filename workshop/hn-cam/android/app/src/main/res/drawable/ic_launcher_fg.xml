@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A square camera body with a square lens: white on black, no curves. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FFFFFF" android:strokeWidth="3" android:fillColor="#00000000"
+        android:pathData="M34,42 L74,42 L74,70 L34,70 Z M46,46 L62,46 L62,66 L46,66 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M66,36 L74,36 L74,40 L66,40 Z" />
+</vector>
