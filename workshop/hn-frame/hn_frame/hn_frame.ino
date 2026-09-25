@@ -49,7 +49,7 @@
 #define CAMERA_VFLIP    false // flip the camera image if it's upside down on screen
 #define CAMERA_HMIRROR  false // mirror it if it's back to front
 #define MAX_PHOTOS      20
-#define BRIGHTNESS      200   // backlight, 0-255
+#define BRIGHTNESS      255   // backlight, 0-255 (full)
 
 // Camera pins for the XIAO ESP32S3 Sense expansion board.
 #define PWDN_GPIO_NUM  -1
