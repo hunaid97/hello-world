@@ -1,26 +1,68 @@
 #!/usr/bin/env python3
 """Turn the frames in figma/ (PNG exports) into graphics_test/graphics.h.
 
-Each frame is scaled down to fit inside 160x80 without distortion (high-quality Lanczos),
-centred on black, converted to RGB565, and written as a C array. Needs ffmpeg.
+Figma renders each frame on its grey canvas, so the area outside the frame's rounded corners
+comes out grey. That grey (and the anti-aliased edge between it and the frame's black
+background) is flood-filled to black from the four corners; the fill stops at the frame's
+black background, so grey artwork inside the frame is left alone. Each frame is then scaled
+down to fit inside 160x80 without distortion (Lanczos), centred on black, converted to
+RGB565 and written as a C array. Needs Pillow.
 
     python3 make_graphics.py
 """
-import glob, os, struct, subprocess
+import glob, os
+from collections import deque
+from PIL import Image
+
+W, H = 160, 80
+
+
+def blacken_corners(img):
+    """Flood-fill the canvas showing through the rounded corners with black."""
+    px = img.load()
+    w, h = img.size
+    seen = set()
+    queue = deque([(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)])
+
+    def canvas(c):
+        r, g, b = c[:3]
+        # Neutral and not (nearly) black: the canvas grey or its blend into the black frame.
+        return max(r, g, b) > 24 and max(r, g, b) - min(r, g, b) < 24
+
+    while queue:
+        x, y = queue.popleft()
+        if (x, y) in seen or not (0 <= x < w and 0 <= y < h) or not canvas(px[x, y]):
+            continue
+        seen.add((x, y))
+        px[x, y] = (0, 0, 0)
+        queue.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)])
+    return img
+
+
+def fit(img):
+    """Scale to fit inside W x H without distortion, centred on black."""
+    scale = min(W / img.width, H / img.height)
+    size = (round(img.width * scale), round(img.height * scale))
+    small = img.resize(size, Image.LANCZOS)
+    out = Image.new("RGB", (W, H), (0, 0, 0))
+    out.paste(small, ((W - size[0]) // 2, (H - size[1]) // 2))
+    return out
+
+
+def rgb565(img):
+    data = img.tobytes()  # RGB, 3 bytes a pixel
+    return [((data[i] >> 3) << 11) | ((data[i + 1] >> 2) << 5) | (data[i + 2] >> 3)
+            for i in range(0, len(data), 3)]
+
 
 os.makedirs("fit", exist_ok=True)
 frames = sorted(glob.glob("figma/*.png"))
 arrays = []
 for f in frames:
     name = os.path.splitext(os.path.basename(f))[0]
-    png, raw = f"fit/{name}.png", f"fit/{name}.raw"
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", f, "-vf",
-                    "scale=w=160:h=80:force_original_aspect_ratio=decrease:flags=lanczos,"
-                    "pad=160:80:(ow-iw)/2:(oh-ih)/2:color=black", png], check=True)
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", png,
-                    "-f", "rawvideo", "-pix_fmt", "rgb565le", raw], check=True)
-    data = open(raw, "rb").read()
-    px = struct.unpack("<%dH" % (len(data) // 2), data)
+    img = fit(blacken_corners(Image.open(f).convert("RGB")))
+    img.save(f"fit/{name}.png")
+    px = rgb565(img)
     rows = ["    " + ", ".join("0x%04x" % p for p in px[i:i + 16]) + "," for i in range(0, len(px), 16)]
     arrays.append(f"  {{  // {name}\n" + "\n".join(rows) + "\n  },")
 
@@ -30,9 +72,9 @@ header = [
     "#pragma once",
     "#include <stdint.h>",
     "",
-    f"static const int GRAPHIC_W = 160, GRAPHIC_H = 80, GRAPHIC_COUNT = {len(frames)};",
+    f"static const int GRAPHIC_W = {W}, GRAPHIC_H = {H}, GRAPHIC_COUNT = {len(frames)};",
     "",
-    f"static const uint16_t GRAPHICS[{len(frames)}][160 * 80] = {{",
+    f"static const uint16_t GRAPHICS[{len(frames)}][{W} * {H}] = {{",
     *arrays,
     "};",
 ]

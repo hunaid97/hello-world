@@ -1,16 +1,15 @@
 // HN_FRAME graphics test: scroll through the Figma watch-face frames on the display.
 //
-//   Turn the knob:  next / previous frame (wraps around), with a tick and an LED blip.
+//   Turn the knob:  next / previous frame (wraps around), with an LED blip.
 //   Press the knob: turn the screen 180 degrees, in case it's upside down.
 //
 // The frames are in graphics.h (generated; see ../README.md). Same wiring as hn_frame.ino:
 //   Display  GND-GND  VCC-3V3  SCL-D8  SDA-D10  RES-D3  DC-D2  CS-D1  BLK-D6
 //   Encoder  A-D4  C (middle)-GND  B-D5    switch: D0 and GND
-//   Buzzer   +-D7  --GND
+//   Buzzer   +-D7  --GND (kept silent in this test)
 
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
-#include "driver/ledc.h"
 #include "graphics.h"
 
 #define PIN_TFT_SCLK 7   // D8
@@ -97,32 +96,11 @@ void IRAM_ATTR onPress() {
   }
 }
 
-// ---- Tick: buzzer on its own LEDC timer, plus the LED ----
-
-void buzzerInit() {
-  ledc_timer_config_t t = {};
-  t.speed_mode = LEDC_LOW_SPEED_MODE;
-  t.duty_resolution = LEDC_TIMER_10_BIT;
-  t.timer_num = LEDC_TIMER_2;
-  t.freq_hz = 4500;
-  t.clk_cfg = LEDC_AUTO_CLK;
-  ledc_timer_config(&t);
-  ledc_channel_config_t c = {};
-  c.gpio_num = PIN_BUZZER;
-  c.speed_mode = LEDC_LOW_SPEED_MODE;
-  c.channel = LEDC_CHANNEL_5;
-  c.timer_sel = LEDC_TIMER_2;
-  ledc_channel_config(&c);
-}
+// ---- Blip the LED on every step (the buzzer stays silent in this test) ----
 
 void tick() {
   digitalWrite(PIN_LED, LOW);
-  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 512);
-  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
-  delay(3);
-  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
-  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
-  delay(20);
+  delay(25);
   digitalWrite(PIN_LED, HIGH);
 }
 
@@ -141,7 +119,8 @@ void setup() {
   digitalWrite(PIN_LED, HIGH);
   pinMode(PIN_TFT_BL, OUTPUT);
   digitalWrite(PIN_TFT_BL, HIGH);  // backlight full on
-  buzzerInit();
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);  // silent
 
   tft.init();
   tft.setSwapBytes(true);  // graphics.h holds plain RGB565 values, not byte-swapped ones
