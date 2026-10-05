@@ -1,0 +1,4 @@
+# The Figma frames are design work: keep them (and everything made from them) out of git.
+figma/
+fit/
+graphics_test/graphics.h
