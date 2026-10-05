@@ -4,6 +4,8 @@ Shows a set of Figma frames on the 160x80 display (landscape) and scrolls throug
 the knob. Same wiring as the picture frame (`../README.md`).
 
 - Turn the knob: next / previous frame, wrapping around, with an LED blip (no sound).
+  First every frame landscape (160x80), then every frame again upright for the screen held
+  portrait (80x160, fitted to the width, at the top).
 - Press the knob: turn the screen 180 degrees.
 
 ## Making the images

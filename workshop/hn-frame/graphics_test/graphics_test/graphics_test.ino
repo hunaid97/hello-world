@@ -1,6 +1,8 @@
 // HN_FRAME graphics test: scroll through the Figma watch-face frames on the display.
 //
-//   Turn the knob:  next / previous frame (wraps around), with an LED blip.
+//   Turn the knob:  next / previous frame (wraps around), with an LED blip. First every
+//                   frame landscape (160x80), then every frame again upright for the
+//                   screen held portrait (80x160, fitted to the width at the top).
 //   Press the knob: turn the screen 180 degrees, in case it's upside down.
 //
 // The frames are in graphics.h (generated; see ../README.md). Same wiring as hn_frame.ino:
@@ -62,7 +64,10 @@ class Display : public lgfx::LGFX_Device {
 };
 
 static Display tft;
-static int rotation = 1;  // landscape; a press flips between 1 and 3
+// Screen rotations: landscape 1, portrait 2 (upright with the knob at the bottom, as in
+// hn_frame.ino). A press flips both by 180 degrees (to 3 and 0).
+static bool flipped = false;
+static const int TOTAL = 2 * GRAPHIC_COUNT;
 
 // ---- Encoder: full-step quadrature state machine (resting with both lines high) ----
 
@@ -109,8 +114,14 @@ void tick() {
 static int current = 0;
 
 void show(int i) {
-  tft.pushImage(0, 0, GRAPHIC_W, GRAPHIC_H, GRAPHICS[i]);
-  Serial.printf("graphic %d/%d\n", i + 1, GRAPHIC_COUNT);
+  if (i < GRAPHIC_COUNT) {
+    tft.setRotation(flipped ? 3 : 1);
+    tft.pushImage(0, 0, GRAPHIC_W, GRAPHIC_H, GRAPHICS[i]);
+  } else {
+    tft.setRotation(flipped ? 0 : 2);
+    tft.pushImage(0, 0, GRAPHIC_H, GRAPHIC_W, GRAPHICS_TALL[i - GRAPHIC_COUNT]);
+  }
+  Serial.printf("graphic %d/%d\n", i + 1, TOTAL);
 }
 
 void setup() {
@@ -124,7 +135,6 @@ void setup() {
 
   tft.init();
   tft.setSwapBytes(true);  // graphics.h holds plain RGB565 values, not byte-swapped ones
-  tft.setRotation(rotation);
   tft.fillScreen(TFT_BLACK);
   show(current);
 
@@ -143,18 +153,17 @@ void loop() {
   interrupts();
 
   if (steps) {
-    current = ((current + steps) % GRAPHIC_COUNT + GRAPHIC_COUNT) % GRAPHIC_COUNT;
+    current = ((current + steps) % TOTAL + TOTAL) % TOTAL;
     show(current);
     tick();
   }
 
   if (pressed) {
     pressed = false;
-    rotation = (rotation == 1) ? 3 : 1;
-    tft.setRotation(rotation);
+    flipped = !flipped;
     show(current);
     tick();
-    Serial.printf("rotation %d\n", rotation);
+    Serial.printf("flipped %d\n", flipped);
   }
   delay(5);
 }
